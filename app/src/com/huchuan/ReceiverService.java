@@ -57,7 +57,7 @@ public class ReceiverService extends Service {
         // 1. GATT server + 广播
         gatt = new GattServer(this, new GattServer.Listener() {
             @Override public void onP2pInfo(P2pInfo info) {
-                Log.i(TAG, "收到 P2pInfo: " + info.ssid + " port=" + info.port);
+                Log.i(TAG, "收到 P2pInfo: " + info.describe());
                 state("收到连接信息，准备加入组…");
                 new Thread(new Runnable() { @Override public void run() {
                     try { joinAndDownload(info); }
@@ -67,6 +67,8 @@ public class ReceiverService extends Service {
             @Override public void onState(String msg) { state(msg); }
         });
         gatt.start();
+        String sockErr = com.huchuan.net.SocketSelfTest.run();
+        state(sockErr == null ? "✅ socket 可用（INTERNET 权限正常）" : "❌ socket 不可用: " + sockErr);
         state("已开始广播，等待发送方…");
 
         // 保持存活直到被停止
@@ -83,8 +85,7 @@ public class ReceiverService extends Service {
         P2pManager.Session s = p2p.getSession();
         state("已加入: " + s);
 
-        String host = (s != null && s.groupOwnerAddress != null)
-                ? s.groupOwnerAddress : "192.168.49.1";
+        String host = resolveHost(s);
         state("发送方地址 " + host + ":" + info.port);
 
         // 3. WS 连接
@@ -121,6 +122,43 @@ public class ReceiverService extends Service {
             }
         });
         recv.close();
+    }
+
+    /**
+     * 推断组主（发送方）的 IP。
+     * 依次尝试：组信息里的 GO 地址 → p2p0 接口的网关 → 常见默认值。
+     * 作为 client 侧的本地 IP 通常是 192.168.49.x，网关即 GO。
+     */
+    private String resolveHost(P2pManager.Session s) {
+        if (s != null && s.groupOwnerAddress != null
+                && !"0.0.0.0".equals(s.groupOwnerAddress)) {
+            return s.groupOwnerAddress;
+        }
+        // 从 p2p0 接口找 IPv4 网关
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> ifs =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifs.hasMoreElements()) {
+                java.net.NetworkInterface ni = ifs.nextElement();
+                if (ni.isUp() && ni.getName() != null && ni.getName().startsWith("p2p")) {
+                    java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        java.net.InetAddress a = addrs.nextElement();
+                        if (a instanceof java.net.Inet4Address && !a.isLoopbackAddress()) {
+                            // 同网段 .1 通常是组主
+                            String ip = a.getHostAddress();
+                            int dot = ip.lastIndexOf('.');
+                            String guess = ip.substring(0, dot) + ".1";
+                            Log.i(TAG, "p2p 接口 " + ni.getName() + " = " + ip + " → 推测 GO " + guess);
+                            return guess;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "推断 GO 地址失败", t);
+        }
+        return "192.168.49.1";
     }
 
     /** 保存目录：/sdcard/Download/互传/ */

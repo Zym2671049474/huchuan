@@ -281,7 +281,7 @@ public final class GattServer {
                         info.port,
                         null,
                         info.catShare);
-                Log.i(TAG, "已解密: ssid=" + info.ssid + " port=" + info.port);
+                Log.i(TAG, "已解密: " + info.describe());
             }
             listener.onP2pInfo(info);
         } catch (Throwable t) {

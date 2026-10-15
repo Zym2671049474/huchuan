@@ -288,6 +288,9 @@ public final class P2pManager {
         if (!connLatch.await(15, TimeUnit.SECONDS)) {
             return new Result(false, -1, "连接超时（15s 未收到 CONNECTION_CHANGED）");
         }
+        // 与建组同理：首个 CONNECTION_CHANGED 可能是 groupFormed=false 的中间态，
+        // 必须等到 lastSession 真正就绪（踩坑 P016）。
+        awaitGroupReady(10);
         Log.i(TAG, "加入完成: " + lastSession);
         return r;
     }
