@@ -2,88 +2,219 @@ package com.huchuan;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.method.ScrollingMovementMethod;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.View;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import com.huchuan.core.BleSecurity;
+import com.huchuan.core.BleUtils;
+import com.huchuan.core.P2pManager;
+import com.huchuan.core.Perms;
+import com.huchuan.net.MiniWebSocket;
+
 /**
- * 入口。M1 阶段只做协议自检展示；M5 会替换为完整 UI。
+ * M2 测试台：验证 WiFi Direct 建组/加入。
+ * M5 会替换为正式 UI。
  */
 public class MainActivity extends Activity {
 
     private static final String TAG = "HuChuan";
+    private static final int REQ_PERM = 1001;
+
+    private TextView logView;
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private P2pManager p2p;
+    private String testSsid, testPsk;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(20);
-        root.setPadding(pad, pad, pad, pad);
-
-        TextView title = new TextView(this);
-        title.setText("互传");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
-        root.addView(title);
-
-        TextView sub = new TextView(this);
-        sub.setText("M1 · 协议基础层");
-        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        sub.setPadding(0, dp(4), 0, dp(16));
-        root.addView(sub);
-
-        TextView info = new TextView(this);
-        info.setText(buildReport());
-        info.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        info.setGravity(Gravity.START);
-        ScrollView sc = new ScrollView(this);
-        sc.addView(info);
-        root.addView(sc);
-
-        setContentView(root);
-        android.util.Log.i(TAG, "onCreate\n" + buildReport());
+        setContentView(buildUi());
+        log("互传 M2 测试台");
+        log("───────────────");
+        log("M1 自检: " + selfTestM1());
+        String[] miss = Perms.missing(this);
+        if (miss.length > 0) {
+            log("请求权限 (" + miss.length + " 项)…");
+            requestPermissions(miss, REQ_PERM);
+        } else {
+            log("✅ 权限已全部授予");
+            initP2p();
+        }
     }
 
-    /** 自检：确认协议常量与加密初始化正常。 */
-    private String buildReport() {
+    private View buildUi() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int p = dp(12);
+        root.setPadding(p, p, p, p);
+
+        TextView t = new TextView(this);
+        t.setText("互传 · M2 测试台");
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        root.addView(t);
+
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setPadding(0, dp(8), 0, dp(8));
+        bar.addView(btn("① 建组", new Runnable() { public void run() { doCreateGroup(); } }));
+        bar.addView(btn("② 加入", new Runnable() { public void run() { doConnect(); } }));
+        bar.addView(btn("③ 状态", new Runnable() { public void run() { doStatus(); } }));
+        bar.addView(btn("清空", new Runnable() { public void run() { logView.setText(""); } }));
+        root.addView(bar);
+
+        logView = new TextView(this);
+        logView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        logView.setGravity(Gravity.START);
+        logView.setMovementMethod(new ScrollingMovementMethod());
+        ScrollView sc = new ScrollView(this);
+        sc.addView(logView);
+        root.addView(sc, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        return root;
+    }
+
+    private Button btn(String label, final Runnable r) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { r.run(); }
+        });
+        return b;
+    }
+
+    // ---- 动作 ----
+
+    private void initP2p() {
+        try {
+            p2p = new P2pManager(this);
+            p2p.register();
+            log("✅ P2pManager 初始化成功");
+            maybeAutoTest();
+        } catch (Throwable e) {
+            log("❌ P2pManager 初始化失败: " + e);
+        }
+    }
+
+    /**
+     * 自动测试模式：Intent 带 autotest=true 时自动跑一次建组。
+     * 用途：无需驱动 UI 即可验证（屏幕锁定时也能跑）。
+     *   am start -n com.huchuan/.MainActivity --ez autotest true
+     */
+    private void maybeAutoTest() {
+        if (!getIntent().getBooleanExtra("autotest", false)) return;
+        log("=== 自动测试模式 ===");
+        ui.postDelayed(new Runnable() { public void run() { doCreateGroup(); } }, 1500);
+    }
+
+    private void doCreateGroup() {
+        if (p2p == null) { log("❌ P2P 未初始化"); return; }
+        testSsid = P2pManager.randomSsid();
+        testPsk = P2pManager.randomPsk();
+        log("── 建组 ──");
+        log("SSID=" + testSsid + "  PSK=" + testPsk);
+        new Thread(new Runnable() { public void run() {
+            try {
+                android.net.wifi.p2p.WifiP2pGroup existing = p2p.requestGroupInfo();
+                if (existing != null) {
+                    log("移除已存在的组: " + existing.getNetworkName());
+                    p2p.removeGroup();
+                }
+                P2pManager.Result r = p2p.createGroup(testSsid, testPsk, true);
+                log(r.ok ? "✅ 建组成功" : "❌ 建组失败: " + r);
+                P2pManager.Session s = p2p.getSession();
+                log(s != null ? "会话: " + s : "（会话信息尚未就绪）");
+            } catch (Throwable e) {
+                log("❌ 建组异常: " + e);
+            }
+        }}).start();
+    }
+
+    private void doConnect() {
+        if (p2p == null) { log("❌ P2P 未初始化"); return; }
+        if (testSsid == null) { log("❌ 请先点①建组（本机将用生成的凭据加入）"); return; }
+        log("── 加入 " + testSsid + " ──");
+        new Thread(new Runnable() { public void run() {
+            try {
+                P2pManager.Result r = p2p.connect(testSsid, testPsk);
+                log(r.ok ? "✅ 加入成功" : "❌ 加入失败: " + r);
+                P2pManager.Session s = p2p.getSession();
+                log(s != null ? "会话: " + s : "（会话信息尚未就绪）");
+            } catch (Throwable e) {
+                log("❌ 加入异常: " + e);
+            }
+        }}).start();
+    }
+
+    private void doStatus() {
+        if (p2p == null) { log("❌ P2P 未初始化"); return; }
+        new Thread(new Runnable() { public void run() {
+            try {
+                android.net.wifi.p2p.WifiP2pGroup g = p2p.requestGroupInfo();
+                if (g == null) { log("当前无 P2P 组"); return; }
+                log("组: " + g.getNetworkName() + " iface=" + g.getInterface()
+                        + " owner=" + g.isGroupOwner());
+                P2pManager.Session s = p2p.getSession();
+                if (s != null) log("会话: " + s);
+            } catch (Throwable e) {
+                log("❌ 查询异常: " + e);
+            }
+        }}).start();
+    }
+
+    // ---- M1 自检 ----
+
+    private String selfTestM1() {
         StringBuilder sb = new StringBuilder();
-        sb.append("BLE UUID\n");
-        sb.append("  广播  ").append(com.huchuan.core.BleUtils.ADV_SERVICE_UUID).append('\n');
-        sb.append("  服务  ").append(com.huchuan.core.BleUtils.SERVICE_UUID).append('\n');
-        sb.append("  状态  ").append(com.huchuan.core.BleUtils.CHAR_STATUS_UUID).append('\n');
-        sb.append("  P2P   ").append(com.huchuan.core.BleUtils.CHAR_P2P_UUID).append("\n\n");
-        sb.append("会话 ID  ").append(com.huchuan.core.BleUtils.getSenderId()).append("\n\n");
-        sb.append("EC P-256 公钥\n");
         try {
-            String pk = com.huchuan.core.BleSecurity.getEncodedPublicKey();
-            sb.append("  长度 ").append(pk.length()).append(" (Base64)\n");
-            sb.append("  ").append(pk.substring(0, Math.min(40, pk.length()))).append("…\n\n");
-            // 自加密回环测试
-            com.huchuan.core.BleSecurity.SessionCipher c =
-                    com.huchuan.core.BleSecurity.deriveSessionKey(pk);
-            String plain = "互传-self-test";
-            String enc = c.encrypt(plain);
-            String dec = c.decrypt(enc);
-            sb.append("加密自检\n");
-            sb.append("  明文 ").append(plain).append('\n');
-            sb.append("  密文 ").append(enc).append('\n');
-            sb.append("  解密 ").append(dec).append('\n');
-            sb.append(plain.equals(dec) ? "  ✅ 加解密一致\n" : "  ❌ 加解密不一致\n");
-        } catch (Throwable t) {
-            sb.append("  ❌ ").append(t).append('\n');
-        }
-        sb.append("\nWS 握手向量\n");
+            sb.append("EC 公钥 ").append(BleSecurity.getEncodedPublicKey().length()).append("B");
+            String pk = BleSecurity.getEncodedPublicKey();
+            BleSecurity.SessionCipher c = BleSecurity.deriveSessionKey(pk);
+            sb.append(c.decrypt(c.encrypt("测试")).equals("测试") ? " / 加解密✅" : " / 加解密❌");
+        } catch (Throwable e) { sb.append(" / 加密❌ ").append(e); }
         try {
-            String got = com.huchuan.net.MiniWebSocket.makeAccept("dGhlIHNhbXBsZSBub25jZQ==");
-            boolean ok = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=".equals(got);
-            sb.append(ok ? "  ✅ RFC6455 测试向量通过\n" : "  ❌ 期望 s3pP… 实际 " + got + "\n");
-        } catch (Throwable t) {
-            sb.append("  ❌ ").append(t).append('\n');
-        }
+            boolean ws = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=".equals(
+                    MiniWebSocket.makeAccept("dGhlIHNhbXBsZSBub25jZQ=="));
+            sb.append(ws ? " / WS✅" : " / WS❌");
+        } catch (Throwable e) { sb.append(" / WS❌"); }
+        sb.append(" / UUID ").append(BleUtils.SERVICE_UUID.toString().substring(0, 8));
         return sb.toString();
+    }
+
+    // ---- 工具 ----
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        if (code != REQ_PERM) return;
+        int granted = 0;
+        for (int r : results) if (r == android.content.pm.PackageManager.PERMISSION_GRANTED) granted++;
+        log("权限结果: " + granted + "/" + perms.length + " 已授予");
+        String[] miss = Perms.missing(this);
+        if (miss.length > 0) {
+            for (String m : miss) log("  ❌ 未授予: " + m);
+            log("⚠️ 缺少权限，P2P 可能失败");
+        }
+        initP2p();
+    }
+
+    private void log(final String s) {
+        android.util.Log.i(TAG, s);
+        ui.post(new Runnable() { public void run() {
+            if (logView != null) logView.append(s + "\n");
+        }});
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        if (p2p != null) p2p.unregister();
     }
 
     private int dp(int v) {
