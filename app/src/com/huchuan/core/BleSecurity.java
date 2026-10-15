@@ -1,6 +1,6 @@
 package com.huchuan.core;
 
-import android.util.Base64;
+
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -34,13 +34,13 @@ public final class BleSecurity {
     }
 
     public static String getEncodedPublicKey() {
-        return Base64.encodeToString(localPublic.getEncoded(), Base64.NO_WRAP);
+        return java.util.Base64.getEncoder().encodeToString(localPublic.getEncoded());
     }
 
     public static SessionCipher deriveSessionKey(String peerPubKeyBase64) throws Exception {
         KeyFactory kf = KeyFactory.getInstance("EC");
         ECPublicKey peer = (ECPublicKey) kf.generatePublic(
-                new X509EncodedKeySpec(Base64.decode(peerPubKeyBase64, Base64.DEFAULT)));
+                new X509EncodedKeySpec(java.util.Base64.getDecoder().decode(peerPubKeyBase64)));
         KeyAgreement ka = KeyAgreement.getInstance("ECDH");
         ka.init(localPrivate);
         ka.doPhase(peer, true);
@@ -60,13 +60,13 @@ public final class BleSecurity {
         public String encrypt(String data) throws Exception {
             Cipher c = Cipher.getInstance("AES/CTR/NoPadding");
             c.init(Cipher.ENCRYPT_MODE, key, new IvParameterSpec(IV));
-            return Base64.encodeToString(c.doFinal(data.getBytes("UTF-8")), Base64.NO_WRAP);
+            return java.util.Base64.getEncoder().encodeToString(c.doFinal(data.getBytes("UTF-8")));
         }
 
         public String decrypt(String data) throws Exception {
             Cipher c = Cipher.getInstance("AES/CTR/NoPadding");
             c.init(Cipher.DECRYPT_MODE, key, new IvParameterSpec(IV));
-            return new String(c.doFinal(Base64.decode(data, Base64.DEFAULT)), "UTF-8");
+            return new String(c.doFinal(java.util.Base64.getDecoder().decode(data)), "UTF-8");
         }
     }
 
