@@ -189,9 +189,33 @@ public final class MiniWebSocket {
 
     /** 启动 WS 服务端；每个连接一个线程。 */
     public static ServerSocket startServer(int port, String path, Handler handler) throws IOException {
-        final ServerSocket ss = new ServerSocket();
-        ss.setReuseAddress(true);
-        ss.bind(new InetSocketAddress(port));
+        return startServer(port, path, handler, null);
+    }
+
+    /**
+     * 启动 WS 服务端。
+     * @param sslContext 非 null 时使用 TLS（wss://）—— 与 CatShare/小米互传一致。
+     */
+    public static ServerSocket startServer(int port, String path, Handler handler,
+                                           javax.net.ssl.SSLContext sslContext) throws IOException {
+        final ServerSocket ss;
+        if (sslContext != null) {
+            javax.net.ssl.SSLServerSocketFactory f = sslContext.getServerSocketFactory();
+            javax.net.ssl.SSLServerSocket sss =
+                    (javax.net.ssl.SSLServerSocket) f.createServerSocket();
+            sss.setReuseAddress(true);
+            sss.bind(new InetSocketAddress(port));
+            // 自签名证书没有 CA 链，必须显式允许，否则握手失败
+            try {
+                sss.setNeedClientAuth(false);
+                sss.setWantClientAuth(false);
+            } catch (Throwable ignored) {}
+            ss = sss;
+        } else {
+            ss = new ServerSocket();
+            ss.setReuseAddress(true);
+            ss.bind(new InetSocketAddress(port));
+        }
         // 注意：不使用 lambda / 方法引用 —— 严格 android.jar 引导类路径下缺少
         // java.lang.invoke.LambdaMetafactory，javac 会报 "Unable to find method metafactory"。
         Thread t = new Thread(new Runnable() {
@@ -243,10 +267,34 @@ public final class MiniWebSocket {
         }
     }
 
-    /** 连接远程 WS 服务端。 */
+    /** 连接远程 WS 服务端（明文）。 */
     public static Conn connect(String host, int port, String path, int timeoutMs, Handler handler) throws IOException {
-        Socket s = new Socket();
-        s.connect(new InetSocketAddress(host, port), timeoutMs);
+        return connect(host, port, path, timeoutMs, handler, null);
+    }
+
+    /**
+     * 连接远程 WS 服务端。
+     * @param sslContext 非 null 时使用 TLS（wss://）。
+     */
+    public static Conn connect(String host, int port, String path, int timeoutMs, Handler handler,
+                               javax.net.ssl.SSLContext sslContext) throws IOException {
+        Socket s;
+        if (sslContext != null) {
+            javax.net.ssl.SSLSocketFactory f = sslContext.getSocketFactory();
+            javax.net.ssl.SSLSocket sss = (javax.net.ssl.SSLSocket) f.createSocket();
+            sss.connect(new InetSocketAddress(host, port), timeoutMs);
+            // 对齐 CatShare 的 hostnameVerifier{ _, _ -> true }：不校验主机名
+            try {
+                javax.net.ssl.SSLParameters p = sss.getSSLParameters();
+                p.setEndpointIdentificationAlgorithm(null);
+                sss.setSSLParameters(p);
+            } catch (Throwable ignored) {}
+            sss.startHandshake();
+            s = sss;
+        } else {
+            s = new Socket();
+            s.connect(new InetSocketAddress(host, port), timeoutMs);
+        }
         s.setTcpNoDelay(true);
         byte[] nonce = new byte[16];
         for (int i = 0; i < 16; i++) nonce[i] = (byte) (Math.random() * 256);

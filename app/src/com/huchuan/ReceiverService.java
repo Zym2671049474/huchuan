@@ -88,13 +88,20 @@ public class ReceiverService extends Service {
         String host = resolveHost(s);
         state("发送方地址 " + host + ":" + info.port);
 
-        // 3. WS 连接
+        // 3. WS 连接（wss，信任一切，对齐 CatShare 的 FakeTrustManager）
+        javax.net.ssl.SSLContext clientTls = null;
+        try {
+            clientTls = com.huchuan.net.Tls.clientContext();
+            state("TLS 客户端已就绪");
+        } catch (Throwable t) {
+            state("⚠️ TLS 初始化失败: " + t);
+        }
         Transfer.Receiver recv = new Transfer.Receiver(recvDir(), deviceName(),
                 new Transfer.Receiver.Listener() {
             @Override public void onState(String m) { state(m); }
             @Override public void onResult(boolean ok, String m) { state((ok ? "✅ " : "❌ ") + m); }
         });
-        recv.connect(host, info.port, 20);
+        recv.connect(host, info.port, 20, clientTls);
         state("已连上发送方，等待传输请求…");
 
         // 4. 等 sendRequest
@@ -120,7 +127,7 @@ public class ReceiverService extends Service {
             @Override public void onDone(boolean ok, String msg) {
                 state(ok ? "✅ 已保存: " + msg : "❌ 下载失败: " + msg);
             }
-        });
+        }, clientTls);
         recv.close();
     }
 

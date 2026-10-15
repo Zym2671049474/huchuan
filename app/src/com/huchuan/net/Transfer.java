@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import javax.net.ssl.HttpsURLConnection;
 import java.net.URL;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -39,6 +40,11 @@ public final class Transfer {
     private static final String TAG = "HuChuan.Transfer";
     public static final String ACTION_VERSION_NEGOTIATION = "versionNegotiation";
     public static final String ACTION_SEND_REQUEST = "sendRequest";
+
+    /** WS 端点路径 —— 必须与 CatShare / 小米互传一致（踩坑 P025）。 */
+    public static final String WS_PATH = "/websocket";
+    /** HTTP 下载端点。 */
+    public static final String DOWNLOAD_PATH = "/download";
 
     public interface Progress {
         void onProgress(long sent, long total);
@@ -76,9 +82,16 @@ public final class Transfer {
         public String getTaskId() { return taskId; }
         public int getHttpPort() { return httpServer == null ? -1 : httpServer.getLocalPort(); }
 
-        /** 启动 HTTP 文件服务，返回端口。 */
-        public int startHttpServer() throws IOException {
-            httpServer = new java.net.ServerSocket(0);
+        /** 启动 HTTP 文件服务，返回端口。ssl=true 时用 HTTPS（与 CatShare 一致）。 */
+        public int startHttpServer(boolean ssl, javax.net.ssl.SSLContext sslCtx) throws IOException {
+            if (ssl && sslCtx != null) {
+                javax.net.ssl.SSLServerSocket sss = (javax.net.ssl.SSLServerSocket)
+                        sslCtx.getServerSocketFactory().createServerSocket(0);
+                sss.setReuseAddress(true);
+                httpServer = sss;
+            } else {
+                httpServer = new java.net.ServerSocket(0);
+            }
             Thread t = new Thread(new Runnable() {
                 @Override public void run() {
                     while (running && !httpServer.isClosed()) {
@@ -96,18 +109,26 @@ public final class Transfer {
                 }
             }, "http-file");
             t.setDaemon(true); t.start();
-            Log.i(TAG, "HTTP 文件服务已启动，端口 " + httpServer.getLocalPort());
+            Log.i(TAG, (ssl ? "HTTPS" : "HTTP") + " 文件服务已启动，端口 " + httpServer.getLocalPort());
             return httpServer.getLocalPort();
         }
 
-        /** 极简 HTTP/1.1 响应：直接输出文件字节。 */
+        /** 兼容旧调用：明文 HTTP。 */
+        public int startHttpServer() throws IOException { return startHttpServer(false, null); }
+
+        /**
+         * 极简 HTTP/1.1 响应：把文件打成 **ZIP 流**输出。
+         *
+         * 为什么是 ZIP：CatShare 的 /download 返回 application/zip，
+         * 条目名形如 "0/文件名"；接收方用 ZipInputStream 解开（踩坑 P024）。
+         * 直接吐裸文件对方解不开。
+         */
         private void serveFile(java.net.Socket s) {
             OutputStream out = null;
             InputStream in = null;
             try {
                 s.setTcpNoDelay(true);
                 InputStream raw = s.getInputStream();
-                // 读掉请求头（不解析，只要 taskId 校验可选）
                 StringBuilder sb = new StringBuilder();
                 int c, last4 = 0;
                 while ((c = raw.read()) >= 0) {
@@ -115,26 +136,43 @@ public final class Transfer {
                     last4 = (last4 << 8) | c;
                     if ((last4 & 0xFFFFFFFFL) == 0x0D0A0D0AL) break;   // \r\n\r\n
                 }
+                String req = sb.toString();
+                Log.i(TAG, "HTTP 请求: " + req.split("\r\n")[0]);
+
                 out = new BufferedOutputStream(s.getOutputStream());
-                long size = file.length();
+                // 用 chunked：ZIP 长度未知（要压缩后才知），且避免大文件全量缓冲
                 String head = "HTTP/1.1 200 OK\r\n"
-                        + "Content-Type: application/octet-stream\r\n"
-                        + "Content-Length: " + size + "\r\n"
+                        + "Content-Type: application/zip\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
                         + "Connection: close\r\n\r\n";
                 out.write(head.getBytes("ASCII"));
 
+                // 用 chunked 编码包一层
+                ChunkedOutputStream cos = new ChunkedOutputStream(out);
+                java.util.zip.ZipOutputStream zo = new java.util.zip.ZipOutputStream(cos);
+                zo.setLevel(java.util.zip.Deflater.BEST_SPEED);
+
                 in = new BufferedInputStream(new FileInputStream(file));
-                byte[] buf = new byte[32 * 1024];
+                java.util.zip.ZipEntry entry = new java.util.zip.ZipEntry("0/" + file.getName());
+                entry.setTime(file.lastModified());
+                zo.putNextEntry(entry);
+
+                byte[] buf = new byte[64 * 1024];
                 long sent = 0;
+                final long total = file.length();
                 int n;
-                final long total = size;
                 while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
+                    zo.write(buf, 0, n);
                     sent += n;
-                    if (listener != null) listener.onState("发送中 " + (sent * 100 / Math.max(1, total)) + "%");
+                    if (listener != null) {
+                        listener.onState("发送中 " + (sent * 100 / Math.max(1, total)) + "%");
+                    }
                 }
+                zo.closeEntry();
+                zo.finish();
+                cos.finish();
                 out.flush();
-                Log.i(TAG, "文件已发送 " + sent + " 字节");
+                Log.i(TAG, "ZIP 已发送（原始 " + sent + " 字节）");
             } catch (Throwable t) {
                 Log.w(TAG, "发送文件出错: " + t);
             } finally {
@@ -143,9 +181,29 @@ public final class Transfer {
             }
         }
 
-        /** 启动 WS 服务端（发送方是 WS server，与 CatShare 一致）。 */
-        public void startWsServer(int port) throws IOException {
-            MiniWebSocket.startServer(port, "/", new MiniWebSocket.Handler() {
+        /** HTTP/1.1 chunked 传输编码包装。 */
+        private static final class ChunkedOutputStream extends OutputStream {
+            private final OutputStream o;
+            private final byte[] hdr = new byte[16];
+            ChunkedOutputStream(OutputStream o) { this.o = o; }
+            @Override public void write(int b) throws IOException { write(new byte[]{(byte) b}, 0, 1); }
+            @Override public void write(byte[] b, int off, int len) throws IOException {
+                if (len <= 0) return;
+                String h = Integer.toHexString(len) + "\r\n";
+                o.write(h.getBytes("ASCII"));
+                o.write(b, off, len);
+                o.write('\r'); o.write('\n');
+            }
+            @Override public void flush() throws IOException { o.flush(); }
+            void finish() throws IOException { o.write("0\r\n\r\n".getBytes("ASCII")); o.flush(); }
+        }
+
+        /**
+         * 启动 WS 服务端（发送方是 WS server，与 CatShare 一致）。
+         * 路径必须是 /websocket，传输必须是 TLS（wss）—— 踩坑 P023/P025。
+         */
+        public void startWsServer(int port, javax.net.ssl.SSLContext sslCtx) throws IOException {
+            MiniWebSocket.startServer(port, WS_PATH, new MiniWebSocket.Handler() {
                 @Override public void onOpen(MiniWebSocket.Conn c) {
                     Log.i(TAG, "WS 客户端已连接");
                     ws = c;
@@ -172,8 +230,9 @@ public final class Transfer {
                 @Override public void onError(MiniWebSocket.Conn c, Throwable t) {
                     Log.e(TAG, "WS 错误", t);
                 }
-            });
-            Log.i(TAG, "WS 服务端已启动，端口 " + port);
+            }, sslCtx);
+            Log.i(TAG, "WS 服务端已启动，端口 " + port + " 路径 " + WS_PATH
+                    + (sslCtx != null ? " (wss)" : " (ws)"));
         }
 
         private void handleMessage(MiniWebSocket.Conn c, String text) {
@@ -260,8 +319,10 @@ public final class Transfer {
             this.listener = listener;
         }
 
-        public void connect(String host, int port, int timeoutSec) throws IOException {
-            ws = MiniWebSocket.connect(host, port, "/", timeoutSec * 1000,
+        /** 连接发送方的 WS（wss://，路径 /websocket）。 */
+        public void connect(String host, int port, int timeoutSec,
+                            javax.net.ssl.SSLContext sslCtx) throws IOException {
+            ws = MiniWebSocket.connect(host, port, WS_PATH, timeoutSec * 1000,
                     new MiniWebSocket.Handler() {
                 @Override public void onOpen(MiniWebSocket.Conn c) {
                     Log.i(TAG, "WS 已连接 " + host + ":" + port);
@@ -277,7 +338,9 @@ public final class Transfer {
                 @Override public void onError(MiniWebSocket.Conn c, Throwable t) {
                     Log.e(TAG, "WS 错误", t);
                 }
-            });
+            }, sslCtx);
+            Log.i(TAG, "WS 已连接 " + host + ":" + port + WS_PATH
+                    + (sslCtx != null ? " (wss)" : " (ws)"));
         }
 
         private void handleMessage(MiniWebSocket.Conn c, String text) {
@@ -311,20 +374,29 @@ public final class Transfer {
             Log.i(TAG, "→ status type=" + type);
         }
 
-        /** 从发送方 HTTP 拉文件。 */
+        /**
+         * 从发送方拉文件（HTTPS + ZIP 解包）。
+         * 对齐 CatShare：GET https://host:port/download?taskId=xxx → application/zip，
+         * 条目名形如 "0/文件名"（踩坑 P023/P024）。
+         */
         public boolean download(String host, int port, String taskId, String fileName,
-                                Progress progress) {
+                                Progress progress, javax.net.ssl.SSLContext sslCtx) {
             InputStream in = null;
-            OutputStream out = null;
-            File target = null;
+            java.util.zip.ZipInputStream zin = null;
+            File last = null;
             try {
-                String urlStr = "http://" + host + ":" + port + "/download?taskId=" + taskId;
+                String urlStr = "https://" + host + ":" + port + DOWNLOAD_PATH + "?taskId=" + taskId;
                 Log.i(TAG, "下载 " + urlStr);
-                HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+                HttpsURLConnection conn = (HttpsURLConnection) new URL(urlStr).openConnection();
+                if (sslCtx != null) conn.setSSLSocketFactory(sslCtx.getSocketFactory());
+                conn.setHostnameVerifier(new javax.net.ssl.HostnameVerifier() {
+                    @Override public boolean verify(String h, javax.net.ssl.SSLSession s) { return true; }
+                });
                 conn.setConnectTimeout(10000);
-                conn.setReadTimeout(60000);
+                conn.setReadTimeout(120000);
                 conn.connect();
                 int code = conn.getResponseCode();
+                Log.i(TAG, "HTTP " + code + " type=" + conn.getContentType());
                 if (code != 200) {
                     listener.onResult(false, "HTTP " + code);
                     return false;
@@ -332,29 +404,50 @@ public final class Transfer {
                 long total = conn.getContentLengthLong();
 
                 if (!outDir.exists()) outDir.mkdirs();
-                target = uniqueFile(outDir, fileName);
 
                 in = new BufferedInputStream(conn.getInputStream());
-                out = new BufferedOutputStream(new FileOutputStream(target));
-                byte[] buf = new byte[32 * 1024];
+                zin = new java.util.zip.ZipInputStream(in);
+                byte[] buf = new byte[64 * 1024];
                 long got = 0;
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    out.write(buf, 0, n);
-                    got += n;
-                    if (progress != null) progress.onProgress(got, total);
+                java.util.zip.ZipEntry e;
+                while ((e = zin.getNextEntry()) != null) {
+                    if (e.isDirectory()) continue;
+                    // 条目名是 "0/文件名"，取最后一段
+                    String name = e.getName();
+                    int slash = name.lastIndexOf('/');
+                    if (slash >= 0) name = name.substring(slash + 1);
+                    File target = uniqueFile(outDir, name.isEmpty() ? fileName : name);
+                    OutputStream out = new BufferedOutputStream(new FileOutputStream(target));
+                    int n;
+                    while ((n = zin.read(buf)) > 0) {
+                        out.write(buf, 0, n);
+                        got += n;
+                        if (progress != null) progress.onProgress(got, total);
+                    }
+                    out.flush(); out.close();
+                    zin.closeEntry();
+                    last = target;
+                    Log.i(TAG, "解出条目 " + e.getName() + " → " + target);
                 }
-                out.flush();
-                Log.i(TAG, "下载完成 " + got + " 字节 → " + target);
-                if (progress != null) progress.onDone(true, target.getAbsolutePath());
+                Log.i(TAG, "下载完成 " + got + " 字节 → " + last);
+                if (progress != null) {
+                    progress.onDone(true, last == null ? "(空)" : last.getAbsolutePath());
+                }
                 return true;
             } catch (Throwable t) {
                 Log.e(TAG, "下载失败", t);
                 if (progress != null) progress.onDone(false, String.valueOf(t));
                 return false;
             } finally {
-                closeQuietly(in); closeQuietly(out);
+                try { if (zin != null) zin.close(); } catch (Throwable ignored) {}
+                closeQuietly(in);
             }
+        }
+
+        /** 兼容旧签名：明文 HTTP + 非 ZIP（仅用于自测）。 */
+        public boolean download(String host, int port, String taskId, String fileName,
+                                Progress progress) {
+            return download(host, port, taskId, fileName, progress, null);
         }
 
         public void close() {

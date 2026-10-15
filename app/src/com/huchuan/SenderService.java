@@ -67,13 +67,21 @@ public class SenderService extends Service {
         if (!file.exists()) { state("❌ 文件不存在: " + file); return; }
         state("文件: " + file.getName() + " (" + file.length() + " 字节)");
 
-        // 1. HTTP
+        // 1. HTTPS + WSS（必须 TLS，对方请求的是 https://，见 P023）
+        javax.net.ssl.SSLContext tls = null;
+        try {
+            tls = com.huchuan.net.Tls.serverContext(this);
+            state("TLS 已就绪（自签名证书）");
+        } catch (Throwable t) {
+            state("❌ TLS 初始化失败: " + t);
+            return;
+        }
         transfer = new Transfer.Sender(file, deviceName(), new Transfer.Sender.Listener() {
             @Override public void onState(String m) { state(m); }
             @Override public void onResult(boolean ok, String m) { state((ok ? "✅ " : "❌ ") + m); }
         });
-        int httpPort = transfer.startHttpServer();
-        state("HTTP 端口 " + httpPort);
+        int httpPort = transfer.startHttpServer(true, tls);
+        state("HTTPS 端口 " + httpPort);
 
         // 2. WiFi Direct 建组
         p2p = new P2pManager(this);
@@ -88,10 +96,10 @@ public class SenderService extends Service {
         P2pManager.Session s = p2p.getSession();
         state("组已建立: " + s);
 
-        // 3. WS 服务端（用 httpPort+1 附近找个空闲端口）
+        // 3. WS 服务端（wss://，路径 /websocket）
         int wsPort = findFreePort();
-        transfer.startWsServer(wsPort);
-        state("WS 端口 " + wsPort);
+        transfer.startWsServer(wsPort, tls);
+        state("WSS 端口 " + wsPort);
 
         // 4. BLE 扫描找接收方
         client = new GattClient(this, new GattClient.Listener() {
