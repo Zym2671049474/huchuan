@@ -104,21 +104,26 @@ public class ReceiverService extends Service {
         recv.connect(host, info.port, 20, clientTls);
         state("已连上发送方，等待传输请求…");
 
-        // 4. 等 sendRequest
-        JSONObject req = recv.awaitSendRequest(30);
-        if (req == null) { state("❌ 等待传输请求超时"); recv.close(); return; }
+        // 4. 等 sendRequest（CatShare 发送方在收到 ack 后立刻发，给它 20s 余量）
+        JSONObject req = recv.awaitSendRequest(20);
+        if (req == null) { state("❌ 等待传输请求超时（对方未发 sendRequest）"); recv.close(); return; }
 
         String taskId = req.optString("taskId", req.optString("id"));
         String fileName = req.optString("fileName", "received.bin");
         long totalSize = req.optLong("totalSize", 0);
+        int fileCount = req.optInt("fileCount", 1);
         String senderName = req.optString("senderName", "对方");
-        state("来自 " + senderName + " 的文件: " + fileName + " (" + totalSize + " 字节)");
+        state("来自 " + senderName + " 的文件: " + fileName
+                + " (" + totalSize + " 字节, " + fileCount + " 个)");
 
-        // 自动接受（M5 会加确认对话框）
-        recv.respond(taskId, 1, "ok");
+        // 5. ★立刻回 status(1=接受)★
+        //    对端有 10 秒窗口等这个回复（withTimeoutOrNull(10000)），
+        //    超时就会 removeGroup 断开 —— 真机上就是这样失败的（P026）。
+        //    id 用 99，与 CatShare 的 sendStatusIgnoreException(99, ...) 一致。
+        recv.respond(taskId, 99, 1, "ok");
         state("已接受，开始下载…");
 
-        // 5. 下载
+        // 6. 立刻发起下载 —— 对端的 transferStartFuture 在等这个请求（30s 超时）
         recv.download(host, info.port, taskId, fileName, new Transfer.Progress() {
             @Override public void onProgress(long sent, long total) {
                 int pct = total > 0 ? (int) (sent * 100 / total) : 0;

@@ -51,6 +51,7 @@ public final class MiniWebSocket {
         public boolean isClosed() { return closed; }
 
         public void sendText(String text) throws IOException {
+            android.util.Log.i("HuChuan.Wire", "TX " + text);
             sendFrame(0x1, text.getBytes("UTF-8"));
         }
 
@@ -158,6 +159,7 @@ public final class MiniWebSocket {
         }
 
         private void dispatch(int opcode, byte[] data) {
+            if (opcode == 0x1) android.util.Log.i("HuChuan.Wire", "RX " + new String(data, java.nio.charset.StandardCharsets.UTF_8));
             if (opcode == 0x1) handler.onMessage(this, new String(data, java.nio.charset.StandardCharsets.UTF_8));
             else if (opcode == 0x2) handler.onBinary(this, data);
         }

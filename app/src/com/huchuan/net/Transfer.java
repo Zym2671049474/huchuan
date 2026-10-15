@@ -367,11 +367,20 @@ public final class Transfer {
             return sendRequest.get();
         }
 
-        /** 回复接受/拒绝。type: 1=接受 3=拒绝 */
-        public void respond(String taskId, int type, String reason) throws IOException {
+        /**
+         * 回复接受/拒绝。
+         * @param id 帧里的 id；CatShare 用 99（sendStatusIgnoreException）
+         * @param type 1=接受 3=拒绝
+         */
+        public void respond(String taskId, int id, int type, String reason) throws IOException {
             if (ws == null) return;
-            ws.sendText(WsMessage.makeStatus(0, taskId, type, reason).toText());
-            Log.i(TAG, "→ status type=" + type);
+            ws.sendText(WsMessage.makeStatus(id, taskId, type, reason).toText());
+            Log.i(TAG, "→ status id=" + id + " type=" + type + " reason=" + reason);
+        }
+
+        /** 兼容旧签名：id=0。 */
+        public void respond(String taskId, int type, String reason) throws IOException {
+            respond(taskId, 0, type, reason);
         }
 
         /**
