@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 圆形头像：平板 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="96"
+    android:viewportHeight="96">
+
+    <!-- 圆形底色（紫） -->
+    <path
+        android:fillColor="#8B5CF6"
+        android:pathData="M48,48m-48,0a48,48 0 1 1,96 0a48,48 0,1 1,-96 0" />
+
+    <!-- 平板外框（白） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,24 h36 a4,4 0 0 1 4,4 v40 a4,4 0 0 1 -4,4 h-36 a4,4 0 0 1 -4,-4 v-40 a4,4 0 0 1 4,-4 z" />
+
+    <!-- 屏幕（紫） -->
+    <path
+        android:fillColor="#8B5CF6"
+        android:pathData="M31,30 h34 v32 h-34 z" />
+</vector>

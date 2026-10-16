@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    24dp 全透明图标（P096）。
+
+    ★为什么必须是 24dp 而不是 1dp★
+    通知的 smallIcon 会被系统放进一个固定尺寸的槽位（约 24dp）并**缩放**。
+    之前用 1dp×1dp，系统把它放大 20 多倍 ——
+    矢量的描边/边缘被拉伸后，渲染出来是一个**白色实心圆**，
+    也就是用户看到的"右面的图标"。
+
+    改成一个**标准 24dp 画布**，但里面什么都不画（path 为空），
+    系统缩放时就没有任何可见像素。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 空路径：有画布尺寸，但没有可见图形 -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,0" />
+</vector>

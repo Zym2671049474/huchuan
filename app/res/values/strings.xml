@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">互传</string>
+    <!-- 系统分享面板里显示的条目名（简短，避免被截断成空） -->
+    <string name="share_label">发送到设备</string>
+    <!-- 磁贴名（快捷设置里显示） -->
+    <string name="tile_label">互传接收</string>
 </resources>

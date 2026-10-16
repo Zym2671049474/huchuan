@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+        分享卡片专用主题：整窗透明，只有卡片自己画白底。
+        ★关键★ 必须把 windowBackground 设成透明：
+        Theme.DeviceDefault.Light 自带不透明的 windowBackground，
+        会把整屏刷成白/灰，卡片就不是"浮"在原界面上了。
+    -->
+    <style name="Theme.HuChuan.Share" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+        <item name="android:windowIsFloating">false</item>
+    </style>
+
+    <!--
+        ★设置页专用主题★（P111）
+
+        TileSettingsActivity 原来错误地复用了 Theme.HuChuan.Share（整窗透明），
+        结果它是个"隐形"页面：Activity 起来了，但语义树里没有可访问窗口
+        （`TREE_UNAVAILABLE (no accessible window on display 2)`），
+        辅助功能/自动化都读不到它。
+
+        分享卡片需要透明（要浮在原界面之上），但设置页是**整页界面**，
+        必须有正常的不透明背景 —— 两者主题不能混用。
+    -->
+    <style name="Theme.HuChuan.Settings" parent="@android:style/Theme.DeviceDefault.Light">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+
+</resources>
