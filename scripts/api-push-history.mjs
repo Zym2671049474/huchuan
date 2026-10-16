@@ -85,20 +85,48 @@ if (headArg) {
 // 实测本仓库就是这种情况（远端 9 个提交 vs 本地 22 个，**零个共同 SHA**，
 // 但两边最新的树逐字节一致）。
 //
-// 判定：远端 head 是否在本地历史里
-//   · 在   → 正常差集推送（只推远端没有的）
-//   · 不在 → 历史分叉。默认**拒绝**并给出证据，要求显式加 --force-history，
-//            避免误把别人的提交覆盖掉
+// 判定远端 head 与本地历史的关系（★三种情况，不能只看 SHA 是否存在★）
+//
+//   ① 远端 head 就在本地历史里        → 正常差集推送
+//   ② 远端 head 不在本地，但**树 == 本地某个提交的树**
+//      → 这是**本脚本自己上一轮推送的结果**（重放会造出新 SHA，
+//        所以远端 SHA 永远不在本地历史里！），内容完全等价，
+//        应安全地增量推送，**不需要 --force-history**
+//   ③ 其他                            → 真·历史分叉，默认拒绝
+//
+// ⚠️ 只判断 ① 是错的：本脚本每次重放都会产生新 SHA，
+//    第二次推送时必然落入 ②，会被误报成"历史分叉"而拒绝推送。
+//    （实测踩到：远端 9c7db1d 是本地 803b570 的重放，tree 完全相同。）
 let diverged = false;
+let sameTree = false;
 if (remoteHead) {
-  try { git('cat-file', '-e', `${remoteHead}^{commit}`); }
-  catch { diverged = true; }
+  try {
+    git('cat-file', '-e', `${remoteHead}^{commit}`);
+  } catch {
+    // 远端 head 不在本地 → 取它的 tree，看是否等于本地某个提交的 tree
+    try {
+      const rc = await gh('GET', `${API}/git/commits/${remoteHead}`);
+      const remoteTree = rc?.tree?.sha;
+      if (remoteTree) {
+        const locals = git('rev-list', 'HEAD').split('\n').filter(Boolean);
+        sameTree = locals.some((c) => git('rev-parse', `${c}^{tree}`) === remoteTree);
+      }
+    } catch (e) {
+      // 取不到就当成分叉，走保守路径
+    }
+    diverged = !sameTree;
+    if (sameTree) {
+      console.log(`ℹ️ 远端 head ${remoteHead.slice(0,7)} 不在本地历史，但其 tree 与本地某提交一致`);
+      console.log(`   → 判定为本脚本上一轮的重放结果（内容等价），按增量推送。`);
+    }
+  }
 }
 
 const FORCE = process.argv.includes('--force-history');
 if (diverged && !FORCE) {
   console.error(`\n❌ 远端 ${BRANCH} 的 head ${remoteHead.slice(0,7)} 不在本地历史中 —— 历史已分叉。`);
   console.error(`   本地提交 ${git('rev-list','--count','HEAD')} 个，远端 ${BRANCH} 是另一套历史。`);
+  console.error(`   且其 tree 与本地任何提交都不相同（内容确实不同）。`);
   console.error(`   若确认要用本地历史替换远端（远端内容会丢失），加 --force-history 重跑。`);
   console.error(`   回滚锚点（旧 head）：${remoteHead}`);
   process.exit(2);
@@ -106,10 +134,18 @@ if (diverged && !FORCE) {
 
 let commits;
 if (diverged) {
-  // 分叉：整段本地历史重放，父提交 = 远端旧 head（保留继承认可，不制造孤儿分支）
+  // 真分叉：整段本地历史重放，父提交 = 远端旧 head（保留继承认可，不制造孤儿分支）
   commits = git('rev-list', '--reverse', 'HEAD').split('\n').filter(Boolean);
   console.log(`⚠️ 历史分叉：将重放**全部** ${commits.length} 个本地提交`);
   console.log(`   旧远端 head ${remoteHead.slice(0,7)} 将作为第一个提交的父（可回滚）`);
+} else if (sameTree) {
+  // ② 内容等价：找出远端 head 对应本地哪个提交，只推它之后的
+  const rc = await gh('GET', `${API}/git/commits/${remoteHead}`);
+  const remoteTree = rc.tree.sha;
+  const locals = git('rev-list', 'HEAD').split('\n').filter(Boolean);
+  const base = locals.find((c) => git('rev-parse', `${c}^{tree}`) === remoteTree);
+  console.log(`   对应本地提交 ${base.slice(0,7)}，只推它之后的。`);
+  commits = git('rev-list', '--reverse', `${base}..HEAD`).split('\n').filter(Boolean);
 } else {
   const range = remoteHead ? `${remoteHead}..HEAD` : 'HEAD';
   commits = git('rev-list', '--reverse', range).split('\n').filter(Boolean);
