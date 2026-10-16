@@ -195,6 +195,54 @@ public final class MiniWebSocket {
     }
 
     /**
+     * 在一个**已经 accept 出来的 socket** 上完成 WS 握手，然后进入读循环。
+     *
+     * 用于「单端口同时提供 /websocket 和 /download」的场景（CatShare 就是这么做的：
+     * Ktor 的 embeddedServer 一个端口挂两个路由，P2pInfo 里只有一个 port）。
+     * 调用方负责先窥探请求行、判断这是 WS 升级请求。
+     *
+     * @param in  已经读走请求行之外内容也没关系，本方法会重新解析完整请求头
+     * @param out socket 的输出流
+     */
+    public static void upgradeAccepted(Socket s, Handler handler) throws IOException {
+        handleServerConn(s, s.getInputStream(), handler);
+    }
+
+    /**
+     * 同上，但使用调用方已经缓冲（并回推过首行）的流。
+     *
+     * 单端口路由场景下必须用这个重载：路由层已经从流里读了请求行并 unread 回
+     * PushbackInputStream，如果再走 socket.getInputStream() 会把首行丢掉。
+     */
+    public static void upgradeAccepted(Socket s, InputStream bufferedIn, Handler handler)
+            throws IOException {
+        handleServerConn(s, bufferedIn, handler);
+    }
+
+    /** 直接在一个 ServerSocket 上跑 accept 循环（与 startServer 共用 handleServerConn）。 */
+    public static void acceptLoop(final ServerSocket ss, final String path, final Handler handler) {
+        Thread t = new Thread(new Runnable() {
+            @Override public void run() {
+                while (!ss.isClosed()) {
+                    try {
+                        final Socket s = ss.accept();
+                        s.setTcpNoDelay(true);
+                        Thread c = new Thread(new Runnable() {
+                            @Override public void run() { handleServerConn(s, null, handler); }
+                        });
+                        c.setDaemon(true);
+                        c.start();
+                    } catch (IOException e) {
+                        if (ss.isClosed()) return;
+                    }
+                }
+            }
+        }, "ws-accept");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
      * 启动 WS 服务端。
      * @param sslContext 非 null 时使用 TLS（wss://）—— 与 CatShare/小米互传一致。
      */
@@ -218,33 +266,13 @@ public final class MiniWebSocket {
             ss.setReuseAddress(true);
             ss.bind(new InetSocketAddress(port));
         }
-        // 注意：不使用 lambda / 方法引用 —— 严格 android.jar 引导类路径下缺少
-        // java.lang.invoke.LambdaMetafactory，javac 会报 "Unable to find method metafactory"。
-        Thread t = new Thread(new Runnable() {
-            @Override public void run() {
-                while (!ss.isClosed()) {
-                    try {
-                        final Socket s = ss.accept();
-                        s.setTcpNoDelay(true);
-                        Thread c = new Thread(new Runnable() {
-                            @Override public void run() { handleServerConn(s, path, handler); }
-                        });
-                        c.setDaemon(true);
-                        c.start();
-                    } catch (IOException e) {
-                        if (ss.isClosed()) return;
-                    }
-                }
-            }
-        }, "ws-accept");
-        t.setDaemon(true);
-        t.start();
+        acceptLoop(ss, path, handler);
         return ss;
     }
 
-    private static void handleServerConn(Socket s, String path, Handler handler) {
+    private static void handleServerConn(Socket s, InputStream bufferedIn, Handler handler) {
         try {
-            InputStream in = s.getInputStream();
+            InputStream in = (bufferedIn != null) ? bufferedIn : s.getInputStream();
             String req = readHttpRequest(in);
             Map<String, String> hdrs = new HashMap<>();
             String[] lines = req.split("\r\n");

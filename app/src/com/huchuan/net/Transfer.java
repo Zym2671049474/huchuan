@@ -123,12 +123,14 @@ public final class Transfer {
          * 条目名形如 "0/文件名"；接收方用 ZipInputStream 解开（踩坑 P024）。
          * 直接吐裸文件对方解不开。
          */
-        private void serveFile(java.net.Socket s) {
+        private void serveFile(java.net.Socket s) { serveFile(s, null); }
+
+        private void serveFile(java.net.Socket s, java.io.InputStream bufferedIn) {
             OutputStream out = null;
             InputStream in = null;
             try {
                 s.setTcpNoDelay(true);
-                InputStream raw = s.getInputStream();
+                InputStream raw = (bufferedIn != null) ? bufferedIn : s.getInputStream();
                 StringBuilder sb = new StringBuilder();
                 int c, last4 = 0;
                 while ((c = raw.read()) >= 0) {
@@ -203,7 +205,14 @@ public final class Transfer {
          * 路径必须是 /websocket，传输必须是 TLS（wss）—— 踩坑 P023/P025。
          */
         public void startWsServer(int port, javax.net.ssl.SSLContext sslCtx) throws IOException {
-            MiniWebSocket.startServer(port, WS_PATH, new MiniWebSocket.Handler() {
+            MiniWebSocket.startServer(port, WS_PATH, wsHandler(), sslCtx);
+            Log.i(TAG, "WS 服务端已启动，端口 " + port + " 路径 " + WS_PATH
+                    + (sslCtx != null ? " (wss)" : " (ws)"));
+        }
+
+        /** WS 事件处理器（startWsServer 与 startUnifiedServer 共用）。 */
+        private MiniWebSocket.Handler wsHandler() {
+            return new MiniWebSocket.Handler() {
                 @Override public void onOpen(MiniWebSocket.Conn c) {
                     Log.i(TAG, "WS 客户端已连接");
                     ws = c;
@@ -225,15 +234,89 @@ public final class Transfer {
                 @Override public void onBinary(MiniWebSocket.Conn c, byte[] d) {}
                 @Override public void onClose(MiniWebSocket.Conn c) {
                     Log.i(TAG, "WS 已关闭");
-                    listener.onState("对端断开");
+                    // 收尾噪音：传输已出结果，不要再覆盖通知（P084/P091）
+                    Log.i(TAG, "对端断开（收尾）");
                 }
                 @Override public void onError(MiniWebSocket.Conn c, Throwable t) {
                     Log.e(TAG, "WS 错误", t);
                 }
-            }, sslCtx);
-            Log.i(TAG, "WS 服务端已启动，端口 " + port + " 路径 " + WS_PATH
-                    + (sslCtx != null ? " (wss)" : " (ws)"));
+            };
         }
+
+        /**
+         * 在**同一个端口**上同时提供 /websocket 和 /download。
+         *
+         * 这是 CatShare 的行为（Ktor embeddedServer 单端口双路由）。
+         * 先窥探请求行：是 WS 升级就交给 MiniWebSocket，否则走文件下载。
+         *
+         * @return 实际监听的端口
+         */
+        public int startUnifiedServer(javax.net.ssl.SSLContext sslCtx) throws IOException {
+            if (sslCtx != null) {
+                javax.net.ssl.SSLServerSocket sss = (javax.net.ssl.SSLServerSocket)
+                        sslCtx.getServerSocketFactory().createServerSocket(0);
+                sss.setReuseAddress(true);
+                httpServer = sss;
+            } else {
+                httpServer = new java.net.ServerSocket(0);
+            }
+            final int port = httpServer.getLocalPort();
+
+            Thread t = new Thread(new Runnable() {
+                @Override public void run() {
+                    while (running && !httpServer.isClosed()) {
+                        try {
+                            final java.net.Socket s = httpServer.accept();
+                            Thread h = new Thread(new Runnable() {
+                                @Override public void run() { route(s); }
+                            });
+                            h.setDaemon(true); h.start();
+                        } catch (IOException e) {
+                            if (running) Log.w(TAG, "accept 结束: " + e.getMessage());
+                            return;
+                        }
+                    }
+                }
+            }, "unified-http");
+            t.setDaemon(true); t.start();
+
+            Log.i(TAG, "统一服务已启动，端口 " + port + "（/websocket + /download）");
+            return port;
+        }
+
+        /** 窥探首行，决定走 WS 还是文件下载。 */
+        private void route(java.net.Socket s) {
+            try {
+                s.setTcpNoDelay(true);
+                java.io.PushbackInputStream pin =
+                        new java.io.PushbackInputStream(s.getInputStream(), 8192);
+                StringBuilder sb = new StringBuilder();
+                int c;
+                while ((c = pin.read()) >= 0) {
+                    if (c == '\n') break;
+                    if (c != '\r') sb.append((char) c);
+                    if (sb.length() > 4096) break;
+                }
+                String first = sb.toString();
+                // 塞回去，让下游重新解析完整请求
+                pin.unread((first + "\r\n").getBytes("ISO-8859-1"));
+
+                // ★注意★ 必须把 pin（已回推首行）传下去。
+                // Socket.getInputStream() 每次返回同一个底层流，但已经读走的字节
+                // 不会回来 —— 直接再调 s.getInputStream() 会丢掉首行，握手/解析必失败。
+                if (first.startsWith("GET ") && first.contains(WS_PATH)) {
+                    Log.i(TAG, "→ WS 握手: " + first);
+                    MiniWebSocket.upgradeAccepted(s, pin, wsHandler());
+                } else {
+                    Log.i(TAG, "→ 文件下载: " + first);
+                    serveFile(s, pin);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "route 出错: " + t);
+                closeQuietly(s);
+            }
+        }
+
 
         private void handleMessage(MiniWebSocket.Conn c, String text) {
             Log.i(TAG, "← " + text);
@@ -333,7 +416,8 @@ public final class Transfer {
                 }
                 @Override public void onBinary(MiniWebSocket.Conn c, byte[] d) {}
                 @Override public void onClose(MiniWebSocket.Conn c) {
-                    listener.onState("连接关闭");
+                    // 收尾噪音：同上
+                    Log.i(TAG, "连接关闭（收尾）");
                 }
                 @Override public void onError(MiniWebSocket.Conn c, Throwable t) {
                     Log.e(TAG, "WS 错误", t);
@@ -351,9 +435,21 @@ public final class Transfer {
             if ("action".equals(m.type)) {
                 if (ACTION_VERSION_NEGOTIATION.equalsIgnoreCase(m.name)) {
                     try {
-                        c.sendText(new WsMessage("ack", m.id, m.name, null).toText());
-                        Log.i(TAG, "→ ack versionNegotiation");
-                    } catch (IOException e) { Log.w(TAG, "ack 失败", e); }
+                        // ★必须带 payload★（照抄 CatShare 的 P2pReceiverService$runReceive
+                        //  $2$1$run$1$1）：
+                        //    version     = min(对端 version, 1)
+                        //    threadLimit = 5
+                        // 我们之前发的是 `ack:0:versionNegotiation`（payload=null），
+                        // 对端在等一个带 version/threadLimit 的 ack，
+                        // 等不到就在 ~10 秒后 P2P-GROUP-REMOVED reason=GO_ENDING_SESSION，
+                        // 表现就是「连上了、握了手，然后对方取消」（P072）。
+                        int peerVer = (m.payload != null) ? m.payload.optInt("version", 1) : 1;
+                        org.json.JSONObject ack = new org.json.JSONObject();
+                        ack.put("version", Math.min(peerVer, 1));
+                        ack.put("threadLimit", 5);
+                        c.sendText(new WsMessage("ack", m.id, m.name, ack).toText());
+                        Log.i(TAG, "→ ack versionNegotiation " + ack);
+                    } catch (Throwable e) { Log.w(TAG, "ack 失败", e); }
                 } else if (ACTION_SEND_REQUEST.equals(m.name)) {
                     sendRequest.set(m.payload);
                     requestLatch.countDown();
@@ -388,6 +484,51 @@ public final class Transfer {
          * 对齐 CatShare：GET https://host:port/download?taskId=xxx → application/zip，
          * 条目名形如 "0/文件名"（踩坑 P023/P024）。
          */
+        /**
+         * 拉一个任意路径的小文件（照抄 CatShare 的缩略图预取）。
+         *
+         * CatShare 在等用户决定前会先 "Fetching thumbnail from …"，
+         * 目的是在发送方的 9 秒窗口内保持连接活跃、把能拿的先拿到。
+         *
+         * @param path 形如 "/thumbnail?taskId=…"
+         */
+        public byte[] fetch(String host, int port, String path,
+                            javax.net.ssl.SSLContext sslCtx) throws IOException {
+            String urlStr = "https://" + host + ":" + port
+                    + (path.startsWith("/") ? path : "/" + path);
+            Log.i(TAG, "获取 " + urlStr);
+            pinHostPort = host + ":" + port;   // 记住，让后续 download 复用同一连接池
+            HttpsURLConnection conn = (HttpsURLConnection) new URL(urlStr).openConnection();
+            // ★复用连接★（对齐 CatShare 的 OkHttp ConnectionPool(10)）：
+            // 小米15 在收到 status 后 ~60ms 就拆 P2P 组，
+            // 新建 TLS 连接来不及；复用缩略图那条已建立的连接才有机会（P078）。
+            conn.setRequestProperty("Connection", "keep-alive");
+            if (sslCtx != null) conn.setSSLSocketFactory(sslCtx.getSocketFactory());
+            conn.setHostnameVerifier(new javax.net.ssl.HostnameVerifier() {
+                @Override public boolean verify(String h, javax.net.ssl.SSLSession s) { return true; }
+            });
+            conn.setConnectTimeout(4000);
+            conn.setReadTimeout(4000);
+            try {
+                conn.connect();
+                int code = conn.getResponseCode();
+                Log.i(TAG, "缩略图 HTTP " + code);
+                if (code != 200) return null;
+                java.io.InputStream in = conn.getInputStream();
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] b = new byte[8192];
+                int n;
+                while ((n = in.read(b)) > 0) bos.write(b, 0, n);
+                in.close();
+                return bos.toByteArray();
+            } finally {
+                conn.disconnect();
+            }
+        }
+
+        /** 最近一次 fetch 过的 host:port —— 用于让 download 复用同一条连接。 */
+        private volatile String pinHostPort;
+
         public boolean download(String host, int port, String taskId, String fileName,
                                 Progress progress, javax.net.ssl.SSLContext sslCtx) {
             InputStream in = null;
@@ -401,8 +542,9 @@ public final class Transfer {
                 conn.setHostnameVerifier(new javax.net.ssl.HostnameVerifier() {
                     @Override public boolean verify(String h, javax.net.ssl.SSLSession s) { return true; }
                 });
-                conn.setConnectTimeout(10000);
+                conn.setConnectTimeout(3000);   // 组随时会没，别等 10 秒
                 conn.setReadTimeout(120000);
+                conn.setRequestProperty("Connection", "keep-alive");
                 conn.connect();
                 int code = conn.getResponseCode();
                 Log.i(TAG, "HTTP " + code + " type=" + conn.getContentType());

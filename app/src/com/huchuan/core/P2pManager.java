@@ -61,18 +61,27 @@ public final class P2pManager {
         public final String ssid;
         public final String psk;
         public final String interfaceName;      // 如 p2p-wlan0-0
+        /**
+         * 本机 P2P 接口的真实 MAC（p2p0）。
+         *
+         * 必须是真的：小米互传会拿 P2pInfo.mac 去连对端，
+         * 填假地址（如 02:00:00:00:00:00）对方连不上就断开 ——
+         * 表现为"文件发出去了但对方没过来"，卡在版本协商超时（P058）。
+         */
+        public final String interfaceMac;
 
-        Session(boolean isGroupOwner, String goAddr, String ssid, String psk, String iface) {
+        Session(boolean isGroupOwner, String goAddr, String ssid, String psk, String iface, String mac) {
             this.isGroupOwner = isGroupOwner;
             this.groupOwnerAddress = goAddr;
             this.ssid = ssid;
             this.psk = psk;
             this.interfaceName = iface;
+            this.interfaceMac = mac;
         }
 
         @Override public String toString() {
             return "GO=" + isGroupOwner + " addr=" + groupOwnerAddress
-                    + " ssid=" + ssid + " iface=" + interfaceName;
+                    + " ssid=" + ssid + " iface=" + interfaceName + " mac=" + interfaceMac;
         }
     }
 
@@ -204,7 +213,51 @@ public final class P2pManager {
             psk = group.getPassphrase();
             iface = group.getInterface();
         } catch (Throwable ignored) {}
-        return new Session(isGo, goAddr, ssid, psk, iface);
+        // 真实 p2p0 MAC —— 小米互传要用它来连我们（P058）
+        String mac = readInterfaceMac("p2p0");
+        return new Session(isGo, goAddr, ssid, psk, iface, mac);
+    }
+
+    /**
+     * 读网络接口的硬件地址。
+     *
+     * 优先 {@code NetworkInterface.getHardwareAddress()}（不需要 root）；
+     * 读不到时回落到 {@code /sys/class/net/<name>/address}。
+     * 两者都失败返回 null —— 调用方必须能接受 null（宁可留空也不能编假地址）。
+     */
+    public static String readInterfaceMac(String name) {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> all =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (all != null && all.hasMoreElements()) {
+                java.net.NetworkInterface ni = all.nextElement();
+                if (ni == null || !name.equals(ni.getName())) continue;
+                byte[] hw = ni.getHardwareAddress();
+                if (hw != null && hw.length == 6) return formatMac(hw);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "getHardwareAddress(" + name + ") 失败: " + t);
+        }
+        // 回落：直接读 sysfs
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.FileReader("/sys/class/net/" + name + "/address"));
+            try {
+                String s = r.readLine();
+                if (s != null && s.trim().length() >= 11) return s.trim().toUpperCase();
+            } finally { r.close(); }
+        } catch (Throwable ignored) { }
+        Log.w(TAG, "拿不到 " + name + " 的 MAC");
+        return null;
+    }
+
+    private static String formatMac(byte[] hw) {
+        StringBuilder sb = new StringBuilder(17);
+        for (int i = 0; i < hw.length; i++) {
+            if (i > 0) sb.append(':');
+            sb.append(String.format("%02X", hw[i]));
+        }
+        return sb.toString();
     }
 
     // ---- 对外 API ----
@@ -270,8 +323,108 @@ public final class P2pManager {
         Log.w(TAG, "建组超时：未在 " + timeoutSec + "s 内拿到组信息");
     }
 
-    /** 加入组（接收方）。 */
+    /**
+     * 等 p2p0 真正拿到 IPv4 地址。
+     *
+     * ★这个方法是接收方向的关键（P069）★
+     *
+     * 加入组成功（收到 CONNECTION_CHANGED、groupFormed=true）**不等于**网络就绪：
+     * 作为 client 时，DHCP 还要几百毫秒到几秒才把地址配到 p2p0 上。
+     * 之前这里不等，直接去连 GO 的 192.168.49.1，Socket 就卡在
+     * `connect()` 上直到超时，日志表现为「TLS 客户端已就绪」之后再无输出。
+     *
+     * 发送方向之所以一直正常，是因为我们自己是 GO（isGroupOwner=true），
+     * 192.168.49.1 就是我们自己的地址，不需要等 DHCP。
+     *
+     * @return 拿到的 IPv4 地址；超时返回 null
+     */
+    public String awaitInterfaceIpv4(int timeoutSec) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutSec * 1000L;
+        while (System.currentTimeMillis() < deadline) {
+            String ip = findP2pIpv4();
+            if (ip != null) {
+                Log.i(TAG, "p2p0 已就绪，本机地址 " + ip);
+                return ip;
+            }
+            Thread.sleep(200);
+        }
+        Log.w(TAG, "等 p2p0 拿到地址超时（" + timeoutSec + "s）");
+        return null;
+    }
+
+    /** 遍历 p2p* 接口找 IPv4 地址（排除回环）。 */
+    private static String findP2pIpv4() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> ifs =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            while (ifs.hasMoreElements()) {
+                java.net.NetworkInterface ni = ifs.nextElement();
+                if (ni == null || ni.getName() == null) continue;
+                if (!ni.getName().startsWith("p2p")) continue;
+                if (!ni.isUp()) continue;
+                java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    java.net.InetAddress a = addrs.nextElement();
+                    if (a instanceof java.net.Inet4Address && !a.isLoopbackAddress()) {
+                        return a.getHostAddress();
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "枚举 p2p 接口失败: " + t);
+        }
+        return null;
+    }
+
+    /**
+     * 加入组（接收方）。
+     *
+     * ★严格照抄 CatShare 的顺序★（P2pReceiverService$runReceive$2）：
+     *   1. 若已有 P2P 组 → removeGroup()      "A P2P group already exists, trying to remove"
+     *   2. cancelConnect()                    清掉可能挂着的连接请求
+     *   3. connect(config)                    只有 setNetworkName + setPassphrase
+     *   4. 等 CONNECTION_CHANGED（10 秒）      "Waiting for P2P connect"
+     *   5. 等 p2p0 拿到 IPv4
+     *
+     * 之前缺了 1、2 —— 残留的旧组会让 p2p0 停在 DOWN，
+     * 于是 wss 连接一直阻塞（P069）。
+     */
     public Result connect(String ssid, String psk) throws InterruptedException {
+        // 1. 先清掉残留的组（CatShare: "A P2P group already exists, trying to remove"）
+        WifiP2pGroup existing = null;
+        try {
+            java.lang.reflect.Method m = manager.getClass()
+                    .getMethod("requestGroupInfo", WifiP2pManager.Channel.class,
+                            WifiP2pManager.GroupInfoListener.class);
+            final CountDownLatch gl = new CountDownLatch(1);
+            final WifiP2pGroup[] got = new WifiP2pGroup[1];
+            m.invoke(manager, channel, new WifiP2pManager.GroupInfoListener() {
+                @Override public void onGroupInfoAvailable(WifiP2pGroup g) {
+                    got[0] = g; gl.countDown();
+                }
+            });
+            gl.await(2, TimeUnit.SECONDS);
+            existing = got[0];
+        } catch (Throwable t) {
+            Log.w(TAG, "查询现有组失败（忽略）: " + t);
+        }
+        if (existing != null) {
+            Log.i(TAG, "A P2P group already exists, trying to remove");
+            removeGroup();
+            Thread.sleep(500);
+        }
+
+        // 2. 清掉可能挂起的连接请求
+        try {
+            awaitAction(new Action() {
+                @Override public void run(WifiP2pManager.ActionListener l) {
+                    manager.cancelConnect(channel, l);
+                }
+            });
+        } catch (Throwable t) {
+            Log.w(TAG, "cancelConnect 失败（忽略）: " + t);
+        }
+
         final WifiP2pConfig cfg = new WifiP2pConfig.Builder()
                 .setNetworkName(ssid)
                 .setPassphrase(psk)
@@ -291,6 +444,11 @@ public final class P2pManager {
         // 与建组同理：首个 CONNECTION_CHANGED 可能是 groupFormed=false 的中间态，
         // 必须等到 lastSession 真正就绪（踩坑 P016）。
         awaitGroupReady(10);
+        // ★还必须等 p2p0 真的拿到 IP★，否则后面 connect() 会一直阻塞（P069）
+        String ip = awaitInterfaceIpv4(10);
+        if (ip == null) {
+            Log.w(TAG, "警告：p2p0 未拿到地址，后续连接可能失败");
+        }
         Log.i(TAG, "加入完成: " + lastSession);
         return r;
     }
