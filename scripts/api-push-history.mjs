@@ -24,8 +24,19 @@ import { execFileSync } from 'node:child_process';
 
 const TOKEN = process.env.GH_TOKEN;
 const REPO  = process.env.GH_REPO;
-const BRANCH = process.argv[2] || 'main';
+// ★分支名必须只取「非选项」参数★（P125）
+//
+// 原来写的是 `process.argv[2] || 'main'`，于是
+//     node scripts/api-push-history.mjs --force-history
+// 会把 **`--force-history` 当成分支名** —— 结果：23 个提交全建好了，
+// 却推到了一个叫 `--force-history` 的新分支上，`main` 纹丝不动
+// （实测踩到：远端出现 `--force-history → 9c7db1d`，而 main 仍是旧 head）。
+//
+// 现在过滤掉所有以 `-` 开头的参数，剩下的第一个才是分支名。
+const positional = process.argv.slice(2).filter((a) => !a.startsWith('-'));
+const BRANCH = positional[0] || 'main';
 if (!TOKEN || !REPO) { console.error('需要 GH_TOKEN 与 GH_REPO=owner/name'); process.exit(1); }
+console.log(`目标分支: refs/heads/${BRANCH}`);
 const API = `https://api.github.com/repos/${REPO}`;
 const H = { Authorization: `Bearer ${TOKEN}`, Accept: 'application/vnd.github+json',
             'Content-Type': 'application/json', 'User-Agent': 'huchuan-agent' };
@@ -48,6 +59,22 @@ try {
   const ref = await gh('GET', `${API}/git/ref/heads/${BRANCH}`);
   remoteHead = ref?.object?.sha ?? null;
 } catch { console.log(`(远端 ${BRANCH} 尚不存在，将创建)`); }
+
+// 1b. ★--head=<sha> 快速修分支★（P125）—— 必须放在分叉检查**之前**
+//
+// 上一轮推送把 23 个提交/树都建好了，却因分支名 bug 没更新 main；
+// 提交对象已在远端，重跑没必要再传一遍 blob。这里先确认该提交确实存在，
+// 再把分支指过去。放在分叉检查前面，是因为修复分支本来就不需要重放历史。
+const headArg = process.argv.find((a) => a.startsWith('--head='));
+if (headArg) {
+  const sha = headArg.slice('--head='.length);
+  await gh('GET', `${API}/git/commits/${sha}`);       // 不存在会在此抛错
+  console.log(`直接更新 refs/heads/${BRANCH} → ${sha.slice(0,7)}（复用已存在的提交）`);
+  await gh('PATCH', `${API}/git/refs/heads/${BRANCH}`, { sha, force: true });
+  console.log(`\n✅ 推送完成: https://github.com/${REPO}/tree/${BRANCH}`);
+  console.log(`   HEAD=${sha.slice(0,7)}`);
+  process.exit(0);
+}
 
 // 2. 算出要推送的提交序列（按时间正序）
 //
@@ -105,24 +132,56 @@ function treeOf(commit) {
   return list;
 }
 
+// ★blob 内容去重 + 分段预取★（P125）
+//
+// 第一版**没有去重**，于是同一个文件在 23 个提交里被反复上传：
+// 实测 986 次 POST，而按内容去重后只有 **124 个独立 blob（1.27 MB）** ——
+// 白白多花 8 倍请求，直接把推送卡死（一轮跑了几百次往返还没到一半）。
+//
+// 现在：先扫出全历史用到的所有 blob sha（去重），一次性并发上传，
+// 后续建树时直接查缓存。GitHub 的 blob 是内容寻址，同 sha 必同内容，
+// 所以「sha → 远端 blob sha」这个映射可以安全复用。
+const needed = new Set();
+for (const commit of commits) {
+  for (const e of treeOf(commit)) if (e.type === 'blob') needed.add(e.sha);
+}
+console.log(`\n需要上传 ${needed.size} 个 blob（已按内容去重，原累积条目 `
+          + `${commits.reduce((n, c) => n + treeOf(c).length, 0)} 个）`);
+
+const localToRemote = new Map();   // 本地 blob sha → 远端 blob sha
+{
+  const shas = [...needed];
+  const CONC = 8;
+  let done = 0;
+  for (let i = 0; i < shas.length; i += CONC) {
+    const slice = shas.slice(i, i + CONC);
+    const results = await Promise.all(slice.map(async (sha) => {
+      const buf = gitRaw('cat-file', 'blob', sha);
+      const blob = await gh('POST', `${API}/git/blobs`,
+                            { content: buf.toString('base64'), encoding: 'base64' });
+      return [sha, blob.sha];
+    }));
+    for (const [a, b] of results) localToRemote.set(a, b);
+    done += slice.length;
+    process.stdout.write(`\r   已上传 ${done}/${shas.length}`);
+  }
+  process.stdout.write('\n');
+}
+
 let parent = remoteHead;
 let pushed = 0;
 for (const commit of commits) {
   const entries = treeOf(commit);
   const msg = git('log', '-1', '--format=%B', commit);
-  console.log(`\n[${++pushed}/${commits.length}] ${commit.slice(0,7)}  ${entries.length} 个文件`);
+  console.log(`[${++pushed}/${commits.length}] ${commit.slice(0,7)}  ${entries.length} 个文件`);
 
-  // blob 去重缓存：同一内容在一个提交里只上一次（GitHub 也按内容寻址）
   const tree = [];
   for (const e of entries) {
     if (e.type === 'commit') {        // 子模块：直接引用，不上传内容
       tree.push({ path: e.path, mode: e.mode, type: 'commit', sha: e.sha });
       continue;
     }
-    const buf = gitRaw('cat-file', 'blob', e.sha);
-    const blob = await gh('POST', `${API}/git/blobs`,
-                          { content: buf.toString('base64'), encoding: 'base64' });
-    tree.push({ path: e.path, mode: e.mode, type: 'blob', sha: blob.sha });
+    tree.push({ path: e.path, mode: e.mode, type: 'blob', sha: localToRemote.get(e.sha) });
   }
   const newTree = await gh('POST', `${API}/git/trees`, { tree });
   const newCommit = await gh('POST', `${API}/git/commits`, {
