@@ -38,17 +38,51 @@
         android:theme="@android:style/Theme.DeviceDefault.Light"
         android:usesCleartextTraffic="true">
 
+        <!--
+            ★没有桌面入口★（P111，用户要求）
+
+            用户："点击桌面图标显示的首页应该去掉了，我觉得没用了，
+                   桌面入口也没用，安装应用之后就长按磁贴打开应用就可以"
+
+            所以不再声明 MAIN/LAUNCHER。应用的入口只有两个：
+              1. 短按磁贴        → 开/关接收（默认 10 分钟）
+              2. 长按磁贴        → TileSettingsActivity（详细开关）
+              3. 系统分享栏      → ShareActivity（发送，不需要开关）
+
+            注意：MainActivity 仍然保留在代码里（作为日志接收端，
+            Service 通过 MainActivity.postLog 回写），但不导出、不声明入口。
+        -->
+
+        <!--
+            系统「分享」入口：弹出轻量卡片选设备，不打开完整 App 界面。
+            · theme 用透明，去掉窗口装饰，由 Activity 自己画底部卡片
+            · excludeFromRecents + noHistory：分享完不留在最近任务里
+            · 同时接 SEND / SEND_MULTIPLE / VIEW
+        -->
         <activity
-            android:name=".MainActivity"
+            android:name=".ShareActivity"
             android:exported="true"
-            android:label="@string/app_name">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <!-- 从其他 app 分享文件过来 -->
+            android:label="@string/share_label"
+            android:icon="@mipmap/ic_launcher"
+            android:theme="@style/Theme.HuChuan.Share"
+            android:windowIsTranslucent="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
@@ -63,6 +97,78 @@
             android:name=".ReceiverService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!--
+            ★点击通知打开已接收的文件★（P121）
+
+            照小米互传的**做法**（反编译 `com/miui/mishare/file/FileInfo.getContentUri`）：
+                FileProvider.getUriForFile(context, "com.miui.mishare", file)
+                getContentResolver().openInputStream(uri) → 交给查看器
+            它的 manifest 里是
+                androidx.core.content.FileProvider, authorities="com.miui.mishare"
+
+            ★但我们没有 androidx 依赖★ —— 这套构建只对着 android.jar 编译
+            （见 build.sh），拿不到 androidx.core.content.FileProvider。
+            所以自己写了个等价的最小实现（纯 framework API，见
+            FileContentProvider.java），行为一致：
+              · openFile → 真实 fd
+              · query    → DISPLAY_NAME / SIZE
+              · getType  → 按扩展名推 MIME
+        -->
+        <provider
+            android:name=".FileContentProvider"
+            android:authorities="com.huchuan.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!-- 「接受 / 拒绝」通知按钮的回调 -->
+        <receiver
+            android:name=".ReceiverActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.huchuan.action.ACCEPT" />
+                <action android:name="com.huchuan.action.REJECT" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            「互传接收」磁贴。
+
+            ★只声明 QS_TILE，不要 TOGGLEABLE_TILE★
+            CatShare 的 ReceiverTileService 也只声明了 QS_TILE（dumpsys 对照确认）。
+            加了 TOGGLEABLE_TILE 后，SystemUI 会认为"开关由系统管理"，
+            于是它自己改状态 + 又回调 onClick()，一次点击被放大成
+            十几次到几十次 toggle（实测 15ms 内 10+ 次），
+            磁贴最终停在随机状态 —— 表现就是"变灰、不亮"（P076）。
+
+            注意：TileService 没有长按回调，长按由下面的 TileSettingsActivity 承担。
+        -->
+        <service
+            android:name=".ReceiverTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_transfer"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!--
+            磁贴长按打开的设置页。
+            系统通过这个 action 找到它 —— TileService 本身没有长按回调。
+        -->
+        <activity
+            android:name=".TileSettingsActivity"
+            android:exported="true"
+            android:label="@string/tile_label"
+            android:icon="@drawable/ic_tile_transfer"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.HuChuan.Settings">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
+        </activity>
 
     </application>
 </manifest>
