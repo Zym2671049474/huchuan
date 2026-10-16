@@ -49,9 +49,44 @@ try {
   remoteHead = ref?.object?.sha ?? null;
 } catch { console.log(`(远端 ${BRANCH} 尚不存在，将创建)`); }
 
-// 2. 算出要推送的提交序列（自远端 head 之后，按时间正序）
-const range = remoteHead ? `${remoteHead}..HEAD` : 'HEAD';
-let commits = git('rev-list', '--reverse', range).split('\n').filter(Boolean);
+// 2. 算出要推送的提交序列（按时间正序）
+//
+// ★分叉怎么处理★（P125）
+//
+// 不能无脑用 `${remoteHead}..HEAD`：远端历史可能是**老 api-push.mjs 压平重写**
+// 出来的，那些 SHA 在本地根本不存在 → `fatal: Invalid revision range`。
+// 实测本仓库就是这种情况（远端 9 个提交 vs 本地 22 个，**零个共同 SHA**，
+// 但两边最新的树逐字节一致）。
+//
+// 判定：远端 head 是否在本地历史里
+//   · 在   → 正常差集推送（只推远端没有的）
+//   · 不在 → 历史分叉。默认**拒绝**并给出证据，要求显式加 --force-history，
+//            避免误把别人的提交覆盖掉
+let diverged = false;
+if (remoteHead) {
+  try { git('cat-file', '-e', `${remoteHead}^{commit}`); }
+  catch { diverged = true; }
+}
+
+const FORCE = process.argv.includes('--force-history');
+if (diverged && !FORCE) {
+  console.error(`\n❌ 远端 ${BRANCH} 的 head ${remoteHead.slice(0,7)} 不在本地历史中 —— 历史已分叉。`);
+  console.error(`   本地提交 ${git('rev-list','--count','HEAD')} 个，远端 ${BRANCH} 是另一套历史。`);
+  console.error(`   若确认要用本地历史替换远端（远端内容会丢失），加 --force-history 重跑。`);
+  console.error(`   回滚锚点（旧 head）：${remoteHead}`);
+  process.exit(2);
+}
+
+let commits;
+if (diverged) {
+  // 分叉：整段本地历史重放，父提交 = 远端旧 head（保留继承认可，不制造孤儿分支）
+  commits = git('rev-list', '--reverse', 'HEAD').split('\n').filter(Boolean);
+  console.log(`⚠️ 历史分叉：将重放**全部** ${commits.length} 个本地提交`);
+  console.log(`   旧远端 head ${remoteHead.slice(0,7)} 将作为第一个提交的父（可回滚）`);
+} else {
+  const range = remoteHead ? `${remoteHead}..HEAD` : 'HEAD';
+  commits = git('rev-list', '--reverse', range).split('\n').filter(Boolean);
+}
 if (!commits.length) { console.log('✅ 没有新提交，无需推送'); process.exit(0); }
 console.log(`将要推送 ${commits.length} 个提交（远端 head=${remoteHead ? remoteHead.slice(0,7) : '无'}）:`);
 for (const c of commits) console.log(`   ${c.slice(0,7)}  ${git('log','-1','--format=%s',c)}`);
