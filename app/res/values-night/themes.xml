@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        ★设置页深色主题★（系统深色模式下由框架自动选用本文件）
+
+        ★parent 必须换成非 Light 的 DeviceDefault★
+        Theme.DeviceDefault.Light 会强制把 Switch、下拉菜单、文本选择手柄
+        这些**系统控件**画成浅色版。即使我们自己的颜色全改成深色，
+        开关仍是白底黑边的控件，在深底上非常突兀。
+        换成 Theme.DeviceDefault（跟随系统深色）即可。
+
+        只覆盖 windowBackground：其余交给系统默认深色样式，
+        这样系统升级时控件外观也会跟着更新。
+    -->
+    <style name="Theme.HuChuan.Settings" parent="@android:style/Theme.DeviceDefault">
+        <item name="android:windowBackground">@color/page_bg</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+</resources>

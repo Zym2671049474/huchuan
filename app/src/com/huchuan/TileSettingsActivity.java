@@ -140,6 +140,26 @@ public class TileSettingsActivity extends Activity {
         }
         mainSwitch.setChecked(switchOn);
         refreshUi();
+        logThemeColors();
+    }
+
+    /**
+     * 打印实际取到的配色（诊断用）。
+     *
+     * <p>为什么留这条日志：深色模式是**框架按配置自动选资源**的行为，
+     * 出问题时"看起来没变"可能是三种原因（没打包 / 选了浅色 / 被缓存），
+     * 光看界面分不清。把实际取到的 ARGB 打出来，一眼能定位到哪一步断的。
+     * 正常情况两行对比就能确认深浅色都工作。
+     */
+    private void logThemeColors() {
+        int uiMode = getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        String night = uiMode == android.content.res.Configuration.UI_MODE_NIGHT_YES ? "深色" : "浅色";
+        android.util.Log.i("HuChuan.TileSettings",
+                "主题=" + night
+                + " page_bg=" + Integer.toHexString(c(R.color.page_bg))
+                + " card_bg=" + Integer.toHexString(c(R.color.card_bg))
+                + " text_primary=" + Integer.toHexString(c(R.color.text_primary)));
     }
 
     // ------------------------------------------------------------------
@@ -148,7 +168,7 @@ public class TileSettingsActivity extends Activity {
 
     private View build() {
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(0xFFF7F8FA);
+        scroll.setBackgroundColor(c(R.color.page_bg));
         scroll.setFillViewport(true);
 
         LinearLayout root = new LinearLayout(this);
@@ -160,7 +180,7 @@ public class TileSettingsActivity extends Activity {
         TextView bar = new TextView(this);
         bar.setText("互传");
         bar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-        bar.setTextColor(0xFF1A1A1A);
+        bar.setTextColor(c(R.color.text_primary));
         bar.setTypeface(Typeface.DEFAULT_BOLD);
         bar.setPadding(dp(24), dp(20), dp(24), dp(12));
         root.addView(bar);
@@ -170,7 +190,7 @@ public class TileSettingsActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable cardBg = new GradientDrawable();
-        cardBg.setColor(Color.WHITE);
+        cardBg.setColor(c(R.color.card_bg));
         cardBg.setCornerRadius(dp(16));
         card.setBackgroundDrawable(cardBg);
         card.setPadding(dp(20), dp(6), dp(20), dp(6));
@@ -187,7 +207,7 @@ public class TileSettingsActivity extends Activity {
         // 第二行：说明文字（小米互传 DescPreference = "可被附近设备发现"）
         descView = new TextView(this);
         descView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        descView.setTextColor(0xFF8A8A8E);
+        descView.setTextColor(c(R.color.text_secondary));
         descView.setPadding(dp(2), 0, dp(2), dp(14));
         card.addView(descView);
 
@@ -212,7 +232,7 @@ public class TileSettingsActivity extends Activity {
         foot.setText("长按磁贴可重新打开此页。\n"
                 + "开启后，附近的安卓设备可以找到本机并发送文件。");
         foot.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        foot.setTextColor(0xFF9AA0A6);
+        foot.setTextColor(c(R.color.text_tertiary));
         foot.setPadding(dp(28), dp(18), dp(28), 0);
         foot.setLineSpacing(0, 1.35f);
         root.addView(foot);
@@ -230,7 +250,7 @@ public class TileSettingsActivity extends Activity {
         TextView label = new TextView(this);
         label.setText("接收文件");
         label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        label.setTextColor(0xFF1A1A1A);
+        label.setTextColor(c(R.color.text_primary));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         label.setLayoutParams(lp);
@@ -277,12 +297,12 @@ public class TileSettingsActivity extends Activity {
         TextView t = new TextView(this);
         t.setText("接收范围");
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        t.setTextColor(0xFF1A1A1A);
+        t.setTextColor(c(R.color.text_primary));
         texts.addView(t);
 
         modeView = new TextView(this);
         modeView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        modeView.setTextColor(0xFF8A8A8E);
+        modeView.setTextColor(c(R.color.text_secondary));
         modeView.setPadding(0, dp(3), 0, 0);
         texts.addView(modeView);
 
@@ -291,7 +311,7 @@ public class TileSettingsActivity extends Activity {
         TextView arrow = new TextView(this);
         arrow.setText("▾");
         arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        arrow.setTextColor(0xFFB0B0B5);
+        arrow.setTextColor(c(R.color.text_arrow));
         row.addView(arrow);
 
         return row;
@@ -308,7 +328,7 @@ public class TileSettingsActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.WHITE);
+        bg.setColor(c(R.color.card_bg));
         bg.setCornerRadius(dp(16));
         card.setBackgroundDrawable(bg);
         card.setPadding(dp(20), dp(16), dp(20), dp(16));
@@ -327,7 +347,7 @@ public class TileSettingsActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("附近的手机");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        title.setTextColor(0xFF1A1A1A);
+        title.setTextColor(c(R.color.text_primary));
         title.setTypeface(Typeface.DEFAULT_BOLD);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -336,7 +356,7 @@ public class TileSettingsActivity extends Activity {
 
         nearbyCount = new TextView(this);
         nearbyCount.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        nearbyCount.setTextColor(0xFF8A8A8E);
+        nearbyCount.setTextColor(c(R.color.text_secondary));
         head.addView(nearbyCount);
 
         card.addView(head);
@@ -422,7 +442,7 @@ public class TileSettingsActivity extends Activity {
             TextView empty = new TextView(this);
             empty.setText("暂无设备。\n在另一台手机打开「互传」并长按磁贴开启接收，即可在此看到。");
             empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            empty.setTextColor(0xFF9AA0A6);
+            empty.setTextColor(c(R.color.text_tertiary));
             empty.setLineSpacing(0, 1.3f);
             nearbyList.addView(empty);
             nearbyCount.setText("");
@@ -456,7 +476,7 @@ public class TileSettingsActivity extends Activity {
                 ? dev.name : "未识别的设备";
         name.setText(shown);
         name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        name.setTextColor(0xFF1A1A1A);
+        name.setTextColor(c(R.color.text_primary));
         name.setSingleLine(true);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         texts.addView(name);
@@ -464,7 +484,7 @@ public class TileSettingsActivity extends Activity {
         TextView sub = new TextView(this);
         sub.setText(dev.address + "  ·  " + dev.rssi + " dBm");
         sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        sub.setTextColor(0xFF9AA0A6);
+        sub.setTextColor(c(R.color.text_tertiary));
         sub.setPadding(0, dp(3), 0, 0);
         texts.addView(sub);
 
@@ -473,7 +493,7 @@ public class TileSettingsActivity extends Activity {
         TextView bars = new TextView(this);
         bars.setText(signalBarsText(NearbyDevices.signalBars(dev.rssi)));
         bars.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        bars.setTextColor(0xFF34A853);
+        bars.setTextColor(c(R.color.signal_ok));
         row.addView(bars);
 
         return row;
@@ -488,7 +508,7 @@ public class TileSettingsActivity extends Activity {
 
     private View divider() {
         View v = new View(this);
-        v.setBackgroundColor(0xFFEDEEF0);
+        v.setBackgroundColor(c(R.color.divider));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(0.7f) > 0 ? dp(0.7f) : 1));
         lp.height = Math.max(1, (int) (0.7f * getResources().getDisplayMetrics().density + 0.5f));
@@ -528,7 +548,7 @@ public class TileSettingsActivity extends Activity {
         final LinearLayout menu = new LinearLayout(this);
         menu.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.WHITE);
+        bg.setColor(c(R.color.card_bg));
         bg.setCornerRadius(dp(14));
         menu.setBackgroundDrawable(bg);
         menu.setPadding(dp(6), dp(6), dp(6), dp(6));
@@ -543,7 +563,7 @@ public class TileSettingsActivity extends Activity {
             TextView item = new TextView(this);
             item.setText(modeLabel(m));
             item.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-            item.setTextColor(m == mode ? 0xFF1A73E8 : 0xFF1A1A1A);
+            item.setTextColor(m == mode ? c(R.color.accent) : c(R.color.text_primary));
             item.setPadding(dp(16), dp(14), dp(16), dp(14));
             if (m == mode) item.setTypeface(Typeface.DEFAULT_BOLD);
             item.setOnClickListener(new View.OnClickListener() {
@@ -656,6 +676,25 @@ public class TileSettingsActivity extends Activity {
         }
         android.util.Log.i("HuChuan.TileSettings", "权限 " + ok + "/" + perms.length + " 已授予");
         refreshUi();
+    }
+
+    /**
+     * 取颜色资源。
+     *
+     * <p>★为什么不直接用 {@code getResources().getColor()}★：
+     * 那个方法在 API 23 起被废弃，且**不理会主题**；API 23+ 要用
+     * {@code getColor(id, theme)}。这里统一走 ContextCompat 风格的兼容写法，
+     * 保证深色模式下取到 values-night 里的那套值。
+     *
+     * <p>做成一行辅助方法而不是到处写三元判断：调用点太多（20+ 处），
+     * 每处都写兼容逻辑既啰嗦又容易漏。
+     */
+    @SuppressWarnings("deprecation")
+    private int c(int colorRes) {
+        if (android.os.Build.VERSION.SDK_INT >= 23) {
+            return getResources().getColor(colorRes, getTheme());
+        }
+        return getResources().getColor(colorRes);
     }
 
     private int dp(float v) {

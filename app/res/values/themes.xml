@@ -30,7 +30,11 @@
         必须有正常的不透明背景 —— 两者主题不能混用。
     -->
     <style name="Theme.HuChuan.Settings" parent="@android:style/Theme.DeviceDefault.Light">
-        <item name="android:windowBackground">@android:color/white</item>
+        <!-- 用 @color/page_bg 而不是 @android:color/white：
+             深色模式下 values-night/colors.xml 会把它换成 #121212。
+             若写死 white，深色下会有一瞬间的白底闪烁（窗口背景先画出来，
+             Activity 的 ScrollView 才覆盖上去）。 -->
+        <item name="android:windowBackground">@color/page_bg</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:backgroundDimEnabled">false</item>
     </style>

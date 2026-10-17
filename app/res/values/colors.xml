@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        ★设置页配色（浅色）★
+
+        ★为什么抽成资源而不是写在 Java 里★
+        写死颜色在代码里就没法做深色模式：代码只认一个值。
+        颜色放资源、深色版放 values-night/，系统切换时由框架自动选，
+        Java 侧只需要引用 @color/xxx 一处都不用改逻辑。
+
+        命名按「语义」而不是「颜色」（bg / text_primary 而不是 white / black）：
+        深色模式下 text_primary 是白字，叫 black 就自相矛盾了。
+    -->
+
+    <!-- 页面背景（卡片之间露出来的底） -->
+    <color name="page_bg">#F7F8FA</color>
+    <!-- 卡片背景 -->
+    <color name="card_bg">#FFFFFF</color>
+    <!-- 标题、主要文字 -->
+    <color name="text_primary">#1A1A1A</color>
+    <!-- 说明、次要文字 -->
+    <color name="text_secondary">#8A8A8E</color>
+    <!-- 脚注、更淡的提示 -->
+    <color name="text_tertiary">#9AA0A6</color>
+    <!-- 右侧箭头等装饰 -->
+    <color name="text_arrow">#B0B0B5</color>
+    <!-- 卡片内分隔线 -->
+    <color name="divider">#EDEEF0</color>
+    <!-- 强调色（选中项、信号格） -->
+    <color name="accent">#1A73E8</color>
+    <!-- 信号格（表示"良好"的绿） -->
+    <color name="signal_ok">#34A853</color>
+</resources>

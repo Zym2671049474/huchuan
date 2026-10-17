@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        ★设置页配色（深色）★
+        Android 8.0+ 系统切到深色模式时，框架自动选用 values-night 下的这套，
+        代码里不用写任何 if (isNightMode)。
+
+        选色参考 Material 深色规范：
+        - 背景不用纯黑（#000000），用近黑 #121212 减少眩光、也更省电（OLED）
+        - 卡片比背景**亮**一档（#1E1E1E），靠亮度差表现层次，
+          而不是像浅色模式那样靠阴影
+        - 文字不用纯白（#FFFFFF），用 #E8EAED，否则深色下刺眼
+        - 强调色提亮：浅色模式的 #1A73E8 在深底上对比度不足，换 #8AB4F8
+    -->
+
+    <color name="page_bg">#121212</color>
+    <color name="card_bg">#1E1E1E</color>
+    <color name="text_primary">#E8EAED</color>
+    <color name="text_secondary">#9AA0A6</color>
+    <color name="text_tertiary">#80868B</color>
+    <color name="text_arrow">#5F6368</color>
+    <color name="divider">#2C2C2E</color>
+    <color name="accent">#8AB4F8</color>
+    <color name="signal_ok">#81C995</color>
+</resources>
