@@ -71,7 +71,6 @@ public class TileSettingsActivity extends Activity {
     private TextView descView;
     private TextView modeView;
     private LinearLayout optionRow;
-
     /** 当前选中的模式（下拉里的值）。 */
     private int mode = MODE_CLOSE;
     /**
@@ -177,6 +176,9 @@ public class TileSettingsActivity extends Activity {
         // 第三行：模式选择（小米互传 DropDownPreference，点击弹菜单）
         optionRow = (LinearLayout) optionRowView();
         card.addView(optionRow);
+
+        // 分隔线
+        card.addView(divider());
 
         // ── 底部提示 ──
         TextView foot = new TextView(this);
@@ -413,6 +415,12 @@ public class TileSettingsActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        ticker.removeCallbacks(tick);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
         ticker.removeCallbacks(tick);
     }
 

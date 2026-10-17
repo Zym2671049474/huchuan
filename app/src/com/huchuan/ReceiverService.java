@@ -101,26 +101,6 @@ public class ReceiverService extends Service {
         }
         Log.i(TAG, "开关已开且未过期 → 开始广播");
 
-        // ★挂载 MS-CDP 发现层（Windows 10/11「就近共享」）★
-        //
-        // 位置是刻意的：**必须在上面的 isRunning() / isExpired() 检查之后**。
-        // 那两个 return 是 P114 的核心修复 —— 开关没开时服务立刻退出、
-        // 绝不广播。CDP 若放在它们之前，就重演了 P114：
-        // 用户没开开关，电脑却在「就近共享」里看见了本机。
-        //
-        // 语义要求（与 ReceiverState 严格同步）：
-        //   开关开着 → 这里启动；开关关闭 → onDestroy() 里 stop()。
-        // UDP 5050 占用 / 权限不足等失败只记日志，**绝不影响小米互传**，
-        // CdpDiscoveryManager 内部已经 catch 了所有 Throwable。
-        try {
-            com.huchuan.cdp.CdpDiscoveryManager.startIfNeeded(getApplicationContext());
-        } catch (Throwable t) {
-            // 双保险：CdpDiscoveryManager 自己不上抛，但这里是 onStartCommand，
-            // 任何从这里冒出去的异常都会让 ReceiverService 崩溃 ——
-            // CDP 只是附加能力，不值得拿主功能去赌。
-            Log.e(TAG, "启动 CDP 发现失败（忽略，不影响接收）", t);
-        }
-
         started = true;
         worker = new Thread(new Runnable() { @Override public void run() {
             try {
@@ -525,14 +505,6 @@ public class ReceiverService extends Service {
         super.onDestroy();
         try { if (gatt != null) gatt.stop(); } catch (Throwable ignored) {}
         try { if (p2p != null) { p2p.removeGroup(); p2p.unregister(); } } catch (Throwable ignored) {}
-        // ★CDP 发现必须在这里停★
-        //
-        // onDestroy() 是服务**所有**退出路径的唯一汇合点：用户关磁贴、
-        // 定时到点自动关、系统回收服务 —— 全都走到这里。少了这一行就是
-        // P114 同类问题：开关已经关了，UDP 5050 却还在应答，
-        // 电脑的「就近共享」里本机一直挂着、且白刷局域网流量。
-        // stop() 幂等且内部吞异常，重复调 / 没启动过都安全。
-        com.huchuan.cdp.CdpDiscoveryManager.stop();
         if (worker != null) worker.interrupt();
     }
 

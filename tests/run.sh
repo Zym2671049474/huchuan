@@ -17,11 +17,9 @@ echo "── 编译被测类 + 测试"
     $SRC/com/huchuan/model/WsMessage.java \
     $SRC/com/huchuan/core/BleSecurity.java \
     $SRC/com/huchuan/core/BleUtils.java \
-    $SRC/com/huchuan/cdp/CdpHeader.java \
-    $SRC/com/huchuan/cdp/MsCdpDiscovery.java \
     jvm/*.java
 
-for T in WsProtoTest CdpHeaderTest; do
+for T in WsProtoTest; do
     echo "── 运行 $T"
     "$JAVA" -cp out "$T" || FAIL=1
 done
