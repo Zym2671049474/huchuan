@@ -16,7 +16,9 @@ import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 
+import com.huchuan.core.NearbyDevices;
 import com.huchuan.core.ReceiverState;
+import java.util.List;
 
 /**
  * 磁贴长按打开的设置页。
@@ -71,6 +73,25 @@ public class TileSettingsActivity extends Activity {
     private TextView descView;
     private TextView modeView;
     private LinearLayout optionRow;
+    /** 附近设备列表容器（refreshNearby 里重建其子 View）。 */
+    private LinearLayout nearbyList;
+    /** 右侧"N 台在线"文案。 */
+    private TextView nearbyCount;
+    /**
+     * 上次列表内容指纹 —— 相同就跳过重建，避免每秒闪烁。
+     *
+     * <p>★初值必须是 null 而不是 ""★：空列表算出来的指纹恰好也是空串，
+     * 若初值为 ""，首次刷新会判定"没变化"直接 return，
+     * 「暂无设备」的引导文案就永远渲染不出来（实测踩过）。
+     */
+    private String nearbySig = null;
+
+    /** 本页自己的 BLE 扫描器（页面可见时扫描附近设备）。 */
+    private com.huchuan.core.GattClient nearbyScanner;
+    /** 扫描是否已启动（避免重复 start）。 */
+    private boolean nearbyScanning;
+
+
     /** 当前选中的模式（下拉里的值）。 */
     private int mode = MODE_CLOSE;
     /**
@@ -137,7 +158,7 @@ public class TileSettingsActivity extends Activity {
 
         // ── 标题栏 ──
         TextView bar = new TextView(this);
-        bar.setText("小米互传");
+        bar.setText("互传");
         bar.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         bar.setTextColor(0xFF1A1A1A);
         bar.setTypeface(Typeface.DEFAULT_BOLD);
@@ -180,10 +201,16 @@ public class TileSettingsActivity extends Activity {
         // 分隔线
         card.addView(divider());
 
+        // ── 附近设备卡片（扫描到的手机）──
+        //
+        // 数据来自 NearbyDevices（GattClient 扫描时顺手记的全局缓存），
+        // 这里只**读**、不自己开扫描 —— 免得跟分享页抢扫描器。
+        root.addView(nearbyCard());
+
         // ── 底部提示 ──
         TextView foot = new TextView(this);
         foot.setText("长按磁贴可重新打开此页。\n"
-                + "开启后，附近的小米/安卓设备可以找到本机并发送文件。");
+                + "开启后，附近的安卓设备可以找到本机并发送文件。");
         foot.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         foot.setTextColor(0xFF9AA0A6);
         foot.setPadding(dp(28), dp(18), dp(28), 0);
@@ -268,6 +295,195 @@ public class TileSettingsActivity extends Activity {
         row.addView(arrow);
 
         return row;
+    }
+
+    /**
+     * 「附近的手机」卡片 —— 显示 BLE 扫描到的设备。
+     *
+     * <p>只读 {@link com.huchuan.core.NearbyDevices} 的全局缓存，
+     * **不自己开扫描**：设置页只是旁观，扫出来的设备是分享流程顺手记的。
+     * 没有设备时显示一句引导文案，而不是空白卡片。
+     */
+    private View nearbyCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.WHITE);
+        bg.setCornerRadius(dp(16));
+        card.setBackgroundDrawable(bg);
+        card.setPadding(dp(20), dp(16), dp(20), dp(16));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(16);
+        lp.rightMargin = dp(16);
+        lp.topMargin = dp(14);
+        card.setLayoutParams(lp);
+
+        // 卡片标题行：左边"附近的手机"，右边在线数量
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = new TextView(this);
+        title.setText("附近的手机");
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        title.setTextColor(0xFF1A1A1A);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        title.setLayoutParams(tlp);
+        head.addView(title);
+
+        nearbyCount = new TextView(this);
+        nearbyCount.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        nearbyCount.setTextColor(0xFF8A8A8E);
+        head.addView(nearbyCount);
+
+        card.addView(head);
+
+        // 列表容器（每次刷新 clear + 重建，简单可靠）
+        nearbyList = new LinearLayout(this);
+        nearbyList.setOrientation(LinearLayout.VERTICAL);
+        nearbyList.setPadding(0, dp(10), 0, 0);
+        card.addView(nearbyList);
+
+        return card;
+    }
+
+    /**
+     * 重画设备列表。
+     *
+     * <p>只在内容**变化**时才重建 View —— 每秒无条件重建会让正在看的用户
+     * 觉得列表在闪，也白白消耗 measure/layout。
+     */
+    /**
+     * 开始扫描附近设备（页面可见时调用）。
+     *
+     * <p>★为什么设置页要自己扫★：{@code GattServer}（接收）**只广播不扫描**，
+     * 只有分享流程才会扫。所以接收开着的时候，列表永远是空的 ——
+     * 那样这个卡片就没有意义。这里补一路扫描，页面不可见就停。
+     *
+     * <p>失败（蓝牙关 / 无权限）只记日志，不打扰用户：
+     * 列表显示「暂无设备」即可，不必弹错。
+     */
+    private void startNearbyScan() {
+        if (nearbyScanning) return;
+        if (!com.huchuan.core.Perms.allGranted(this)) return;   // 没权限扫了也白扫
+        try {
+            if (nearbyScanner == null) {
+                nearbyScanner = new com.huchuan.core.GattClient(this,
+                        new com.huchuan.core.GattClient.Listener() {
+                    @Override public void onFound(android.bluetooth.BluetoothDevice d,
+                                                  int rssi, String name) {
+                        // 设备已被 GattClient 记进 NearbyDevices，这里不用重复处理；
+                        // 但自己记一笔，防止别的 GattClient 把缓存清掉。
+                        NearbyDevices.onDiscovered(d, rssi, name, null);
+                    }
+                    @Override public void onDeviceInfo(android.bluetooth.BluetoothDevice d,
+                                                       com.huchuan.model.DeviceInfo info) { }
+                    @Override public void onState(String msg) { }
+                });
+            }
+            nearbyScanner.startScan();
+            nearbyScanning = true;
+            android.util.Log.i("HuChuan.TileSettings", "附近设备扫描已启动");
+        } catch (Throwable t) {
+            nearbyScanning = false;
+            android.util.Log.w("HuChuan.TileSettings", "启动附近扫描失败: " + t);
+        }
+    }
+
+    /** 停止扫描（页面不可见时调用，省电且不占扫描器）。 */
+    private void stopNearbyScan() {
+        if (!nearbyScanning) return;
+        nearbyScanning = false;
+        try { if (nearbyScanner != null) nearbyScanner.stopScan(); } catch (Throwable ignored) { }
+        android.util.Log.i("HuChuan.TileSettings", "附近设备扫描已停止");
+    }
+
+    private void refreshNearby() {
+        if (nearbyList == null) return;
+
+        List<NearbyDevices.Device> list = NearbyDevices.snapshot();
+
+        // 生成一个"内容指纹"，与上次相同就直接返回
+        StringBuilder sig = new StringBuilder();
+        for (NearbyDevices.Device d : list) {
+            sig.append(d.address).append('|').append(d.name)
+               .append('|').append(NearbyDevices.signalBars(d.rssi)).append(';');
+        }
+        String now = sig.toString();
+        if (now.equals(nearbySig)) return;
+        nearbySig = now;
+
+        nearbyList.removeAllViews();
+
+        if (list.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("暂无设备。\n在另一台手机打开「互传」并长按磁贴开启接收，即可在此看到。");
+            empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            empty.setTextColor(0xFF9AA0A6);
+            empty.setLineSpacing(0, 1.3f);
+            nearbyList.addView(empty);
+            nearbyCount.setText("");
+            return;
+        }
+
+        nearbyCount.setText(list.size() + " 台在线");
+
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) nearbyList.addView(divider());
+            nearbyList.addView(deviceRow(list.get(i)));
+        }
+    }
+
+    /** 一行设备：名字 + MAC/信号 + 右侧信号格。 */
+    private View deviceRow(NearbyDevices.Device dev) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(11), 0, dp(11));
+
+        // 左侧竖排：名字 / 地址
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        texts.setLayoutParams(tlp);
+
+        TextView name = new TextView(this);
+        String shown = (dev.name != null && !dev.name.isEmpty())
+                ? dev.name : "未识别的设备";
+        name.setText(shown);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        name.setTextColor(0xFF1A1A1A);
+        name.setSingleLine(true);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        texts.addView(name);
+
+        TextView sub = new TextView(this);
+        sub.setText(dev.address + "  ·  " + dev.rssi + " dBm");
+        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        sub.setTextColor(0xFF9AA0A6);
+        sub.setPadding(0, dp(3), 0, 0);
+        texts.addView(sub);
+
+        row.addView(texts);
+
+        TextView bars = new TextView(this);
+        bars.setText(signalBarsText(NearbyDevices.signalBars(dev.rssi)));
+        bars.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        bars.setTextColor(0xFF34A853);
+        row.addView(bars);
+
+        return row;
+    }
+
+    /** 信号格文字（用方块字符，避免引入图标资源）。 */
+    private static String signalBarsText(int bars) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 1; i <= 4; i++) sb.append(i <= bars ? '\u25A0' : '\u25A1');
+        return sb.toString();
     }
 
     private View divider() {
@@ -402,6 +618,9 @@ public class TileSettingsActivity extends Activity {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             refreshUi();
+            // 附近设备列表也每秒跟一次（内部有内容指纹，
+            // 没变化时不会重建 View，不会闪）。
+            refreshNearby();
             ticker.postDelayed(this, 1000);
         }
     };
@@ -409,12 +628,16 @@ public class TileSettingsActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        // 页面可见 → 开始扫附近设备（不可见时停，省电）
+        startNearbyScan();
+        refreshNearby();
         ticker.postDelayed(tick, 1000);
     }
 
     @Override
     protected void onStop() {
         super.onStop();
+        stopNearbyScan();
         ticker.removeCallbacks(tick);
     }
 

@@ -374,6 +374,10 @@ public final class GattClient {
                     + (name != null ? " name=" + name : ""));
             lastFound = d;
             found.put(d.getAddress(), d);
+            // ★记进全局缓存（P132）★ 供设置页「附近设备」列表显示。
+            // 放在这里而不是让设置页自己扫：设置页不该为了显示列表再占一路
+            // 扫描器（会跟分享页抢，且白耗电）。扫描器反正一直在跑，顺手记一笔。
+            NearbyDevices.onDiscovered(d, result.getRssi(), name, adv);
             // 把解析出的名字**直接传出去**（P100）—— 调用方不必反查
             if (listener != null) listener.onFound(d, result.getRssi(), name);
         }
