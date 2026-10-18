@@ -86,6 +86,18 @@ public class TileSettingsActivity extends Activity {
      */
     private String nearbySig = null;
 
+    /** 定位未开启的警告横幅（定位正常时为 GONE）。 */
+    private View locationWarn;
+    /**
+     * 上次的定位状态：-1=未知，0=关闭，1=开启。
+     *
+     * <p>★用 int 而不是 Boolean★：Boolean 字段初值为 null，
+     * 与基本类型比较时会自动拆箱，首帧直接 NPE。
+     * 那行 NPE 被刷新链路吞掉，表现为横幅一直不显示、日志也没有，
+     * 排查很费劲（实测踩过）。哨兵值 -1 没这个问题。
+     */
+    private int lastLocOn = -1;
+
     /** 本页自己的 BLE 扫描器（页面可见时扫描附近设备）。 */
     private com.huchuan.core.GattClient nearbyScanner;
     /** 扫描是否已启动（避免重复 start）。 */
@@ -184,6 +196,13 @@ public class TileSettingsActivity extends Activity {
         bar.setTypeface(Typeface.DEFAULT_BOLD);
         bar.setPadding(dp(24), dp(20), dp(24), dp(12));
         root.addView(bar);
+
+        // ── 定位未开启的警告横幅（P133）──
+        //
+        // 放在最上面：这是"用不了"级别的阻断问题，必须比开关更显眼。
+        // 平时（定位开着）这条是 GONE，不占位。
+        locationWarn = locationWarningView();
+        root.addView(locationWarn);
 
         // ── 卡片：主开关 + 说明 + 模式 ──
         // 对应小米互传的 CheckBoxPreference + DescPreference + DropDownPreference
@@ -318,6 +337,67 @@ public class TileSettingsActivity extends Activity {
     }
 
     /**
+     * 定位未开启时的警告横幅（P133）。
+     *
+     * <p>★为什么需要它★：Android 的 BLE 扫描强制依赖系统定位服务。
+     * 定位关着时，权限全都授予了、{@code startScan()} 也不报错，
+     * 但**一个广播都收不到** —— 界面表现就是"一直在搜索但什么都没有"，
+     * 用户完全无从判断。实测踩过：找了一圈以为是禁用了 Google 组件，
+     * 真正原因是定位被关了。
+     *
+     * <p>做成醒目的橙色底 + 按钮直接跳系统设置，而不是一句灰色小字：
+     * 这是"功能完全不可用"级别的阻断问题。
+     */
+    private View locationWarningView() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFFFFF3E0);          // 浅橙底（深色模式下也够醒目）
+        bg.setCornerRadius(dp(14));
+        box.setBackgroundDrawable(bg);
+        box.setPadding(dp(18), dp(14), dp(18), dp(14));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(16);
+        lp.rightMargin = dp(16);
+        lp.bottomMargin = dp(12);
+        box.setLayoutParams(lp);
+
+        TextView msg = new TextView(this);
+        msg.setText("定位服务未开启\n蓝牙搜索必须打开定位才能发现设备");
+        msg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        msg.setTextColor(0xFF8A4B00);     // 深橙字，浅底上对比够
+        msg.setLineSpacing(0, 1.25f);
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        msg.setLayoutParams(mlp);
+        box.addView(msg);
+
+        TextView go = new TextView(this);
+        go.setText("去开启");
+        go.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        go.setTextColor(0xFF1A73E8);
+        go.setTypeface(Typeface.DEFAULT_BOLD);
+        go.setPadding(dp(12), dp(6), dp(4), dp(6));
+        go.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                // 直接跳到系统的"位置信息"总开关页。
+                // 各 ROM 的 Settings 页类名不同，优先用系统标准的
+                // ACTION_LOCATION_SOURCE_SETTINGS（几乎所有 ROM 都支持）。
+                try {
+                    startActivity(new android.content.Intent(
+                            android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+                } catch (Throwable t) {
+                    android.util.Log.w("HuChuan.TileSettings", "跳转定位设置失败: " + t);
+                }
+            }
+        });
+        box.addView(go);
+        return box;
+    }
+
+    /**
      * 「附近的手机」卡片 —— 显示 BLE 扫描到的设备。
      *
      * <p>只读 {@link com.huchuan.core.NearbyDevices} 的全局缓存，
@@ -423,6 +503,21 @@ public class TileSettingsActivity extends Activity {
 
     private void refreshNearby() {
         if (nearbyList == null) return;
+
+        // ★先处理定位开关（P133）★ —— 这是"能不能扫到设备"的前提，
+        // 关着时列表永远是空的，必须在列表上方明确告诉用户原因。
+        // 用 View.VISIBLE/GONE 而不是增删 View：避免每次刷新都重新 measure。
+        if (locationWarn != null) {
+            boolean locOn = com.huchuan.core.Perms.isLocationEnabled(this);
+            locationWarn.setVisibility(locOn ? View.GONE : View.VISIBLE);
+            int now = locOn ? 1 : 0;
+            if (now != lastLocOn) {     // 仅状态变化时打日志，避免每秒刷屏
+                lastLocOn = now;
+                android.util.Log.i("HuChuan.TileSettings",
+                        "定位服务=" + (locOn ? "开启" : "关闭") + " → 警告横幅"
+                        + (locOn ? "隐藏" : "显示"));
+            }
+        }
 
         List<NearbyDevices.Device> list = NearbyDevices.snapshot();
 
