@@ -30,4 +30,12 @@
     <color name="accent">#1A73E8</color>
     <!-- 信号格（表示"良好"的绿） -->
     <color name="signal_ok">#34A853</color>
+
+    <!-- ── 分享卡片用色（浮在主屏之上的那张卡片）── -->
+    <!-- 卡片底色：深色模式下要变成深灰，否则白卡片在深色系统上很刺眼 -->
+    <color name="sheet_bg">#FFFFFF</color>
+    <!-- 卡片主标题（「发送到」） -->
+    <color name="sheet_title">#202124</color>
+    <!-- 卡片说明/状态文字 -->
+    <color name="sheet_hint">#5F6368</color>
 </resources>

@@ -149,6 +149,15 @@ public class ShareActivity extends Activity {
         }
 
         setContentView(buildCard());
+        // 诊断：打印实际取到的配色（深色模式是框架自动选资源，
+        // 出问题时"看起来没变"分不清是没打包还是选了浅色）
+        int uiMode = getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        Log.i(TAG, "主题=" + (uiMode == android.content.res.Configuration.UI_MODE_NIGHT_YES
+                        ? "深色" : "浅色")
+                + " sheet_bg=" + Integer.toHexString(c(R.color.sheet_bg))
+                + " sheet_title=" + Integer.toHexString(c(R.color.sheet_title))
+                + " sheet_hint=" + Integer.toHexString(c(R.color.sheet_hint)));
         // ★不再摆缓存设备★（P112）
         //
         // 原来这里调 showCached()：把 7 天内的历史设备先摆上去"秒出"。
@@ -216,6 +225,12 @@ private void searching() {
         if (client != null) {
             client.setScanMode(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY);
         }
+        // ★回到前台要重算提示★（P133）
+        //
+        // 用户很可能是"点提示词去开定位、再返回"—— 这条路径回来时
+        // 定位已经开了，但 hint 还停在警告文案上。
+        // 必须刷新一次，否则卡片看起来像卡住了。
+        updateHint();
         ui.removeCallbacks(sweep);
         ui.post(sweep);      // 立刻恢复"每秒踢过期设备"的巡检
     }
@@ -292,13 +307,13 @@ private void searching() {
         TextView title = new TextView(this);
         title.setText("发送到");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        title.setTextColor(0xFF202124);
+        title.setTextColor(c(R.color.sheet_title));
         card.addView(title);
 
         hint = new TextView(this);
         hint.setText("正在查找附近设备…");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        hint.setTextColor(0xFF5F6368);
+        hint.setTextColor(c(R.color.sheet_hint));
         hint.setPadding(0, dp(4), 0, dp(14));
         card.addView(hint);
 
@@ -312,7 +327,7 @@ private void searching() {
         TextView cancel = new TextView(this);
         cancel.setText("取消");
         cancel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        cancel.setTextColor(0xFF1A73E8);
+        cancel.setTextColor(c(R.color.accent));
         cancel.setGravity(Gravity.CENTER);
         cancel.setPadding(0, dp(14), 0, dp(4));
         cancel.setOnClickListener(new View.OnClickListener() {
@@ -329,7 +344,7 @@ private void searching() {
 
     private Drawable roundBg() {
         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
-        g.setColor(0xFFFFFFFF);
+        g.setColor(c(R.color.sheet_bg));
         g.setCornerRadius(dp(20));
         return g;
     }
@@ -433,10 +448,40 @@ private void searching() {
 
     private void updateHint() {
         if (destroyed) return;
-        if (found.isEmpty()) {
-            hint.setText("正在查找附近设备…\n请确认对方已开启「接收」");
-        } else {
+        if (!found.isEmpty()) {
             hint.setText("找到 " + found.size() + " 个设备");
+            return;
+        }
+        // ★空列表要区分"正在找"和"根本扫不了"★（P133）
+        //
+        // 定位关着时 BLE 扫描会**静默失败**：权限都在、startScan 不报错、
+        // 日志也有"开始扫描"，但一个广播都收不到。用户只看到"正在查找…"
+        // 干等，完全无从判断 —— 实测踩过，排查一圈还以为禁用了 Google 组件。
+        // 所以这里直接把原因说出来，并提供一键跳转。
+        boolean locOn = Perms.isLocationEnabled(this);
+        if (locOn) {
+            hint.setText("正在查找附近设备…\n请确认对方已开启「接收」");
+            // ★复原配色与点击事件★ —— 定位可能是刚打开、也可能是上一轮
+            // 从关闭状态切回来的，不复原的话那句"正在查找"会一直是蓝色可点。
+            hint.setTextColor(c(R.color.sheet_hint));
+            hint.setOnClickListener(null);
+            hint.setClickable(false);
+        } else {
+            hint.setText("定位服务未开启，无法搜索设备\n蓝牙搜索需要打开定位（点此去开启）");
+            hint.setTextColor(c(R.color.accent));
+            hint.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { openLocationSettings(); }
+            });
+        }
+    }
+
+    /** 跳到系统的定位总开关页。 */
+    private void openLocationSettings() {
+        try {
+            startActivity(new android.content.Intent(
+                    android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+        } catch (Throwable t) {
+            Log.w(TAG, "跳转定位设置失败: " + t);
         }
     }
 
@@ -569,7 +614,7 @@ private void searching() {
         TextView label = new TextView(this);
         label.setText(name);
         label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        label.setTextColor(0xFF202124);
+        label.setTextColor(c(R.color.sheet_title));
         label.setGravity(Gravity.CENTER);
         label.setMaxWidth(dp(88));
         label.setMaxLines(2);
@@ -813,6 +858,20 @@ private void searching() {
 
     private void toast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * 取颜色资源（跟随深色模式）。
+     *
+     * <p>API 23 起 getColor(id) 已废弃且不理会主题，必须走 getColor(id, theme)，
+     * 否则拿到的永远是浅色那套值。调用点有 5 处，统一走这个方法。
+     */
+    @SuppressWarnings("deprecation")
+    private int c(int colorRes) {
+        if (android.os.Build.VERSION.SDK_INT >= 23) {
+            return getResources().getColor(colorRes, getTheme());
+        }
+        return getResources().getColor(colorRes);
     }
 
     private int dp(int v) {

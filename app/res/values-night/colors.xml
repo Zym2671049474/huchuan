@@ -22,4 +22,11 @@
     <color name="divider">#2C2C2E</color>
     <color name="accent">#8AB4F8</color>
     <color name="signal_ok">#81C995</color>
+
+    <!-- ── 分享卡片用色（深色）── -->
+    <!-- 卡片比设置页卡片再亮一点（#2A2A2C）：它浮在任意界面之上，
+         需要靠亮度区分出"这是浮层"，太暗会跟背景糊在一起 -->
+    <color name="sheet_bg">#2A2A2C</color>
+    <color name="sheet_title">#E8EAED</color>
+    <color name="sheet_hint">#9AA0A6</color>
 </resources>
