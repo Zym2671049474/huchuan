@@ -4,6 +4,8 @@
 
 > ⚠️ **发送方向需要 root**（读 p2p0 MAC）；**接收方向不需要**。
 
+**下载**：[Releases](https://github.com/Zym2671049474/huchuan/releases/latest) · 最新 v0.2.0（106 KB）
+
 > 协议参考 [CatShare](https://github.com/kmod-midori/CatShare)，**从零用纯 Java 重写**，追求小而精。
 > 当前版本 **v0.2.0**：与小米 15 端到端互传已打通并实测通过。
 
