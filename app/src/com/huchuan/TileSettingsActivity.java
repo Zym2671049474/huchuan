@@ -421,9 +421,14 @@ public class TileSettingsActivity extends Activity {
                         } else {
                             rootTitle.setText("运行环境：未获得 root 权限");
                             rootTitle.setTextColor(0xFFB26A00);
-                            rootDetail.setText("分享时蓝牙需要手动点「允许」；定位没有 root 无法自动打开，"
-                                    + "需要从控制中心手动开启。\n"
-                                    + "其余功能（发送、接收、扫描）均可正常使用。");
+                            // ★必须说清"只能接收、不能发送"★（P136）
+                            //
+                            // 无 root 时读不到 p2p0 MAC（SELinux 拒绝 sysfs_net），
+                            // 发送必然失败 —— 与其让用户发到一半超时，不如一开始讲明。
+                            rootDetail.setText("受限于系统权限，本机目前只能接收，不能发送。\n"
+                                    + "· 发送：需要读取 p2p0 网卡地址，普通应用无权读取\n"
+                                    + "· 接收：不受影响，可以正常使用\n"
+                                    + "· 蓝牙：分享时需手动点「允许」；定位需从控制中心手动开启");
                         }
                         android.util.Log.i("HuChuan.TileSettings", "root=" + hasRoot);
                     }

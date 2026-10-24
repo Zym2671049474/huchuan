@@ -158,9 +158,21 @@ public final class SystemToggles {
         }, 4000);
     }
 
-    /** 是否拿到了 root（探测一次后缓存结果）。 */
+    /** 是否拿到了 root（探测一次后缓存结果）。**可能会阻塞**（exec 试 su）。 */
     public static boolean hasRoot() {
         return findSu() != null;
+    }
+
+    /**
+     * root 探测结果**是否已经缓存**（不阻塞）。
+     *
+     * <p>给主线程用：{@link #hasRoot()} 会真的 exec 试 su，有的机型要卡到
+     * 超时（最长 2.5 秒）。主线程想判断 root 时先问这个方法 ——
+     * 返回 true 就可以安全地再调 {@code hasRoot()}（走缓存，微秒级）；
+     * 返回 false 说明还没探测过，应该丢到后台。
+     */
+    public static boolean isRootProbed() {
+        return suProbed;
     }
 
     /**

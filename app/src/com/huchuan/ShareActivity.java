@@ -118,6 +118,15 @@ public class ShareActivity extends Activity {
      * <p>同样是"原本关着才置 true"，原本开着的绝不碰。
      */
     private boolean autoEnabledBluetooth;
+
+    /**
+     * 是否因"无 root 不能发送"而整块禁用了界面（P136）。
+     *
+     * <p>★必须挡住 updateHint() 和 sweep★：sweep 定时器每秒跑一次
+     * updateHint()，会把拦截提示直接覆盖成"正在查找附近设备…"，
+     * 用户看到的还是空列表 + 搜索中，等于拦截白做了（实测踩过）。
+     */
+    private boolean sendBlocked;
     private Uri pendingUri;
     private GattClient client;
     /** Activity 已销毁：所有 postDelayed 回调要提前退出，别碰已失效的 View。 */
@@ -379,6 +388,30 @@ private void searching() {
             hint.setText("需要蓝牙权限…");
             return;
         }
+        // ★无 root 直接拦住，连扫描都不用做★（P136）
+        //
+        // 但 hasRoot() 要真的 exec 试 su（可能卡 2.5 秒），不能放主线程。
+        // 所以先查一次"已经探测过吗"：探测过就同步判断（微秒级），
+        // 没探测过就先显示"正在检查…"再丢后台。
+        if (com.huchuan.core.SystemToggles.isRootProbed()) {
+            if (blockIfNoRoot()) return;
+        } else {
+            hint.setText("正在检查运行环境…");
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    final boolean noRoot = !com.huchuan.core.SystemToggles.hasRoot();
+                    ui.post(new Runnable() {
+                        @Override public void run() {
+                            if (destroyed) return;
+                            if (noRoot && blockIfNoRoot()) return;
+                            ensureRadioOn();
+                        }
+                    });
+                }
+            }, "check-root").start();
+            return;
+        }
+
         // ★先确保蓝牙/定位是开着的★（P134）
         //
         // 这两个开关关着时扫描会**静默失败**（见 P133）。与其让用户看到
@@ -402,6 +435,45 @@ private void searching() {
      * <p>开蓝牙要等适配器真的变成 ON（1~3 秒）才能扫，否则扫不到任何东西。
      * 所以这里放到后台线程等待，期间界面上给一句"正在打开蓝牙…"。
      */
+    /**
+     * 无 root 时**不能发送**，直接拦住并说明原因（P136）。
+     *
+     * <h3>为什么无 root 发不出去</h3>
+     *
+     * 互传协议里，发送方要把自己的 p2p0 MAC 告诉对端，对端拿它来连我们。
+     * 而这个地址在 Android 10+ 对普通 App **读不到**：
+     *
+     * <pre>
+     * FileNotFoundException: /sys/class/net/p2p0/address:
+     *     open failed: EACCES (Permission denied)
+     * </pre>
+     *
+     * p2p0 属于 SELinux 的 {@code sysfs_net} 域，{@code untrusted_app} 域被
+     * 明确拒绝读取（app 进程上下文 {@code u:r:untrusted_app_34:s0}）。
+     * 拿不到就只能填假地址 02:00:00:00:00:00 → 对端连不上 →
+     * 卡在版本协商超时（P058），表现为"文件发出去了但对方没过来"。
+     *
+     * <p>所以与其让用户等 20 秒后失败，不如**一开始就说清楚**。
+     * 接收方向不受影响（那是对方连我们，不需要我们读自己的 MAC）。
+     *
+     * @return true 表示已被拦住，不要继续扫描
+     */
+    private boolean blockIfNoRoot() {
+        if (com.huchuan.core.SystemToggles.hasRoot()) return false;
+
+        found.clear();
+        if (listRow != null) listRow.removeAllViews();
+        hint.setTextColor(c(R.color.sheet_hint));
+        hint.setOnClickListener(null);
+        hint.setText("当前设备未获得 root 权限，无法发送文件\n"
+                + "发送需要读取 p2p0 网卡地址，普通应用权限不足。\n"
+                + "接收文件可以正常使用。");
+        sendBlocked = true;
+        ui.removeCallbacks(sweep);     // 停掉每秒巡检，界面不会再变
+        Log.i(TAG, "无 root，已禁用发送");
+        return true;
+    }
+
     private void ensureRadioOn() {
         if (com.huchuan.core.SystemToggles.allReady(this)) {
             beginScan();          // 都开着，直接扫
@@ -545,6 +617,7 @@ private void searching() {
 
     private void updateHint() {
         if (destroyed) return;
+        if (sendBlocked) return;      // 已被"无 root"拦住，别覆盖提示（P136）
         if (!found.isEmpty()) {
             hint.setText("找到 " + found.size() + " 个设备");
             return;
