@@ -86,6 +86,11 @@ public class TileSettingsActivity extends Activity {
      */
     private String nearbySig = null;
 
+    /** 「运行环境」卡片（显示 root 状态）。 */
+    private View rootCard;
+    private TextView rootTitle;
+    private TextView rootDetail;
+
     /** 扫描受阻的警告横幅（蓝牙/定位任一未开时显示）。 */
     private View locationWarn;
     /** 横幅里的提示文字（按实际原因动态填）。 */
@@ -203,8 +208,19 @@ public class TileSettingsActivity extends Activity {
         //
         // 放在最上面：这是"用不了"级别的阻断问题，必须比开关更显眼。
         // 平时（定位开着）这条是 GONE，不占位。
+        probeRootAsync();      // 后台检测 root，探测完才决定这张卡片显不显示
+
         locationWarn = locationWarningView();
         root.addView(locationWarn);
+
+        // ── 卡片：运行环境（root 状态）──
+        //
+        // ★给全新用户看的★：首次安装的人不知道这 App 需要 root，
+        // 也不知道没有 root 会缺什么。等他自己撞上"分享时还要手动点"
+        // 才反应过来就太晚了 —— 所以进页面第一眼就告诉他。
+        rootCard = rootCardView();
+        rootCard.setVisibility(View.GONE);   // 先藏，探测完再决定显不显示
+        root.addView(rootCard);
 
         // ── 卡片：主开关 + 说明 + 模式 ──
         // 对应小米互传的 CheckBoxPreference + DescPreference + DropDownPreference
@@ -336,6 +352,84 @@ public class TileSettingsActivity extends Activity {
         row.addView(arrow);
 
         return row;
+    }
+
+    /**
+     * 「运行环境」卡片 —— 告诉用户本机有没有 root（P135）。
+     *
+     * <h3>为什么这张卡片必须存在</h3>
+     *
+     * 别人首次安装这个 App 时，**不知道它需要 root**，更不知道没有 root
+     * 会缺什么。等他分享时发现"还要手动点允许""定位开不了"才反应过来，
+     * 就已经是很差的体验了。
+     *
+     * <p>所以进页面第一眼就交代清楚：现在是什么状态、有 root 能多做什么、
+     * 没有 root 哪些事得自己做。不藏着。
+     *
+     * <p>有 root 时用绿色（一切正常，一眼扫过）；
+     * 没有 root 时用橙色（能力受限，但**能正常用**，不是错误）。
+     */
+    private View rootCardView() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(c(R.color.card_bg));
+        bg.setCornerRadius(dp(14));
+        box.setBackgroundDrawable(bg);
+        box.setPadding(dp(18), dp(16), dp(18), dp(16));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(16);
+        lp.rightMargin = dp(16);
+        lp.bottomMargin = dp(12);
+        box.setLayoutParams(lp);
+
+        rootTitle = new TextView(this);
+        rootTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        rootTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        box.addView(rootTitle);
+
+        rootDetail = new TextView(this);
+        rootDetail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        rootDetail.setTextColor(c(R.color.text_secondary));
+        rootDetail.setLineSpacing(0, 1.35f);
+        rootDetail.setPadding(0, dp(8), 0, 0);
+        box.addView(rootDetail);
+
+        return box;
+    }
+
+    /**
+     * 后台探测 root 并刷新那张卡片。
+     *
+     * <p>★必须放后台★：{@code hasRoot()} 要真的 exec 试 su，
+     * 有的机型 su 会卡到超时才返回（最长 2.5 秒）。放 onCreate 里直接调，
+     * 页面会白屏两秒多才出来 —— 用户会以为卡死了。
+     */
+    private void probeRootAsync() {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final boolean hasRoot = com.huchuan.core.SystemToggles.hasRoot();
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (isFinishing() || rootCard == null) return;
+                        rootCard.setVisibility(View.VISIBLE);
+                        if (hasRoot) {
+                            rootTitle.setText("运行环境：已获得 root 权限");
+                            rootTitle.setTextColor(c(R.color.signal_ok));
+                            rootDetail.setText("蓝牙和定位可以自动开关，分享时无需手动操作。");
+                        } else {
+                            rootTitle.setText("运行环境：未获得 root 权限");
+                            rootTitle.setTextColor(0xFFB26A00);
+                            rootDetail.setText("分享时蓝牙需要手动点「允许」；定位没有 root 无法自动打开，"
+                                    + "需要从控制中心手动开启。\n"
+                                    + "其余功能（发送、接收、扫描）均可正常使用。");
+                        }
+                        android.util.Log.i("HuChuan.TileSettings", "root=" + hasRoot);
+                    }
+                });
+            }
+        }, "probe-root").start();
     }
 
     /**
