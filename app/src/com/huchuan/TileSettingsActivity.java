@@ -264,10 +264,15 @@ public class TileSettingsActivity extends Activity {
         // 这里只**读**、不自己开扫描 —— 免得跟分享页抢扫描器。
         root.addView(nearbyCard());
 
-        // ── 底部提示 ──
+        // ── 底部提示 + 版本号 ──
+        //
+        // ★版本号从 PackageManager 读，不硬编码★
+        // 清单里的 versionName 是唯一真源（配合 docs/01-规范/版本号准则.md），
+        // 这里再抄一份就会两边不同步 —— 改版号时忘改一处是经典事故。
         TextView foot = new TextView(this);
         foot.setText("长按磁贴可重新打开此页。\n"
-                + "开启后，附近的安卓设备可以找到本机并发送文件。");
+                + "开启后，附近的安卓设备可以找到本机并发送文件。\n\n"
+                + "互传 " + versionLabel());
         foot.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         foot.setTextColor(c(R.color.text_tertiary));
         foot.setPadding(dp(28), dp(18), dp(28), 0);
@@ -901,6 +906,25 @@ public class TileSettingsActivity extends Activity {
             return getResources().getColor(colorRes, getTheme());
         }
         return getResources().getColor(colorRes);
+    }
+
+    /**
+     * 取「版本名 (版本号)」用于显示，如 {@code v0.2.0 (200)}。
+     *
+     * <p>从 PackageManager 读清单里的值，不在代码里写死 —— 见调用处注释。
+     * 读不到时返回空串而不是崩溃：这行只是页脚信息，不值得为它挂掉整页。
+     */
+    private String versionLabel() {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0);
+            String name = pi.versionName;
+            int code = pi.versionCode;
+            if (name == null || name.isEmpty()) return "v" + code;
+            return "v" + name + " (" + code + ")";
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     private int dp(float v) {
