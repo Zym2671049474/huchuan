@@ -97,6 +97,14 @@ public class ShareActivity extends Activity {
 
     private LinearLayout listRow;      // 头像横排
     private TextView hint;
+    /**
+     * 本轮是否由我们**自动打开了定位**（用于显示"定位已自动打开"提示）。
+     *
+     * <p>为什么要记这个：定位本来就没开、我们替用户打开了，这件事必须
+     * 让用户知道 —— 否则他下次在别的 App 里发现"定位怎么自己开了"会困惑。
+     * 只在本轮分享里有效，卡片关掉就归零。
+     */
+    private boolean autoEnabledLocation;
     private Uri pendingUri;
     private GattClient client;
     /** Activity 已销毁：所有 postDelayed 回调要提前退出，别碰已失效的 View。 */
@@ -358,7 +366,79 @@ private void searching() {
             hint.setText("需要蓝牙权限…");
             return;
         }
-        beginScan();
+        // ★先确保蓝牙/定位是开着的★（P134）
+        //
+        // 这两个开关关着时扫描会**静默失败**（见 P133）。与其让用户看到
+        // "一直在搜索…"，不如在扫描之前就自动把它们打开。
+        // 具体能自动到什么程度取决于有没有 root，交给 SystemToggles 判断。
+        ensureRadioOn();
+    }
+
+    /**
+     * 自动打开蓝牙和定位，然后再开始扫描（P134）。
+     *
+     * <p>分两步走，因为能力不同：
+     * <ol>
+     *   <li><b>有 root</b>：直接开（{@code svc bluetooth enable} /
+     *       {@code settings put secure location_mode 3}），开完立即扫，
+     *       用户零操作</li>
+     *   <li><b>没 root</b>：蓝牙弹系统对话框（Android 13+ 第三方 App
+     *       不能直接开），定位只能跳设置页 —— 定位没有公开 API</li>
+     * </ol>
+     *
+     * <p>开蓝牙要等适配器真的变成 ON（1~3 秒）才能扫，否则扫不到任何东西。
+     * 所以这里放到后台线程等待，期间界面上给一句"正在打开蓝牙…"。
+     */
+    private void ensureRadioOn() {
+        if (com.huchuan.core.SystemToggles.allReady(this)) {
+            beginScan();          // 都开着，直接扫
+            return;
+        }
+
+        // ★全部丢到后台线程★
+        //
+        // hasRoot() 要 exec 试 su（最长 2.5 秒），开蓝牙还要轮询等适配器
+        // 上电（1~3 秒）。这些一旦跑在主线程，卡片就直接卡死不动了 ——
+        // 分享卡片本身是个 Activity，ANR 门槛只有 5 秒。
+        hint.setText("正在打开蓝牙…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                boolean hasRoot = com.huchuan.core.SystemToggles.hasRoot();
+                final boolean bt;
+                final boolean loc;
+                // 先记下"动手之前"的状态 —— 后面要靠它判断是不是我们打开的
+                final boolean locWasOn = com.huchuan.core.SystemToggles
+                        .isLocationOn(ShareActivity.this);
+                if (hasRoot) {
+                    bt = com.huchuan.core.SystemToggles
+                            .tryEnableBluetoothByRoot(ShareActivity.this);
+                    loc = com.huchuan.core.SystemToggles
+                            .tryEnableLocationByRoot(ShareActivity.this);
+                    Log.i(TAG, "root 自动开启: 蓝牙=" + bt + " 定位=" + loc);
+                    // 只有"原本没开、被我们打开"才提示，原本就开着不动
+                    autoEnabledLocation = loc && !locWasOn;
+                } else {
+                    bt = com.huchuan.core.SystemToggles.isBluetoothOn(ShareActivity.this);
+                    loc = com.huchuan.core.SystemToggles.isLocationOn(ShareActivity.this);
+                    Log.i(TAG, "无 root，只能提示: 蓝牙=" + bt + " 定位=" + loc);
+                }
+                ui.post(new Runnable() {
+                    @Override public void run() {
+                        if (destroyed) return;
+                        if (!hasRoot) {
+                            // 没 root：蓝牙弹系统对话框（唯一合规路径），
+                            // 定位没有公开 API，只能靠 updateHint 里的提示
+                            if (!bt) {
+                                com.huchuan.core.SystemToggles
+                                        .requestBluetoothViaDialog(ShareActivity.this);
+                            }
+                        }
+                        beginScan();
+                        updateHint();
+                    }
+                });
+            }
+        }, "enable-radio").start();
     }
 
     @SuppressWarnings("MissingPermission")
@@ -457,31 +537,36 @@ private void searching() {
         // 定位关着时 BLE 扫描会**静默失败**：权限都在、startScan 不报错、
         // 日志也有"开始扫描"，但一个广播都收不到。用户只看到"正在查找…"
         // 干等，完全无从判断 —— 实测踩过，排查一圈还以为禁用了 Google 组件。
-        // 所以这里直接把原因说出来，并提供一键跳转。
+        // 所以这里直接把原因说出来（只提示，不跳转）。
         boolean locOn = Perms.isLocationEnabled(this);
         if (locOn) {
-            hint.setText("正在查找附近设备…\n请确认对方已开启「接收」");
+            // ★自动开过定位要说一声★
+            //
+            // 我们替用户改了系统开关，必须让他知道 —— 否则下次在别的 App
+            // 里发现"定位怎么自己开了"会困惑。这句只在"原本没开、我们打开"
+            // 的那一轮出现，用户自己开的情况不显示。
+            if (autoEnabledLocation) {
+                hint.setText("定位已自动打开，正在查找附近设备…\n请确认对方已开启「接收」");
+            } else {
+                hint.setText("正在查找附近设备…\n请确认对方已开启「接收」");
+            }
             // ★复原配色与点击事件★ —— 定位可能是刚打开、也可能是上一轮
-            // 从关闭状态切回来的，不复原的话那句"正在查找"会一直是蓝色可点。
+            // 从关闭状态切回来的，不复原的话那句"正在查找"会一直是强调色。
             hint.setTextColor(c(R.color.sheet_hint));
             hint.setOnClickListener(null);
             hint.setClickable(false);
         } else {
-            hint.setText("定位服务未开启，无法搜索设备\n蓝牙搜索需要打开定位（点此去开启）");
+            // ★只提示，不跳转★
+            //
+            // 之前的做法是这里挂一个点击事件直接跳系统设置页。用户反馈
+            // 那样很突兀 —— 分享卡片本来是个浮层，突然被整页设置盖掉，
+            // 回来还得重新触发一次分享。
+            // 改成纯文字说明：用户看到"未开启定位"自己从控制中心拉一下就行，
+            // 整个过程不离开当前界面。
+            hint.setText("定位未开启，暂时搜不到设备\n请从控制中心打开「定位」，返回后自动继续搜索");
             hint.setTextColor(c(R.color.accent));
-            hint.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { openLocationSettings(); }
-            });
-        }
-    }
-
-    /** 跳到系统的定位总开关页。 */
-    private void openLocationSettings() {
-        try {
-            startActivity(new android.content.Intent(
-                    android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS));
-        } catch (Throwable t) {
-            Log.w(TAG, "跳转定位设置失败: " + t);
+            hint.setOnClickListener(null);
+            hint.setClickable(false);
         }
     }
 
