@@ -98,13 +98,26 @@ public class ShareActivity extends Activity {
     private LinearLayout listRow;      // 头像横排
     private TextView hint;
     /**
-     * 本轮是否由我们**自动打开了定位**（用于显示"定位已自动打开"提示）。
+     * 本轮是否由我们**自动打开了定位**。
      *
-     * <p>为什么要记这个：定位本来就没开、我们替用户打开了，这件事必须
-     * 让用户知道 —— 否则他下次在别的 App 里发现"定位怎么自己开了"会困惑。
-     * 只在本轮分享里有效，卡片关掉就归零。
+     * <p>两个用途：
+     * <ol>
+     *   <li>显示"定位已自动打开"提示 —— 我们替用户改了系统开关，
+     *       必须让他知道，否则下次在别的 App 里发现"定位怎么自己开了"会困惑</li>
+     *   <li>分享结束后**关回去** —— 只关我们打开的，用户自己开的不许动</li>
+     * </ol>
+     *
+     * <p>★只有"原本关着 → 被我们打开"才置 true★。
+     * 原本就开着的，这里保持 false，收尾时不会去碰它。
      */
     private boolean autoEnabledLocation;
+
+    /**
+     * 本轮是否由我们**自动打开了蓝牙**（收尾时要关回去）。
+     *
+     * <p>同样是"原本关着才置 true"，原本开着的绝不碰。
+     */
+    private boolean autoEnabledBluetooth;
     private Uri pendingUri;
     private GattClient client;
     /** Activity 已销毁：所有 postDelayed 回调要提前退出，别碰已失效的 View。 */
@@ -406,17 +419,21 @@ private void searching() {
                 boolean hasRoot = com.huchuan.core.SystemToggles.hasRoot();
                 final boolean bt;
                 final boolean loc;
-                // 先记下"动手之前"的状态 —— 后面要靠它判断是不是我们打开的
+                // 先记下"动手之前"的状态 —— 后面靠它判断是不是我们打开的
                 final boolean locWasOn = com.huchuan.core.SystemToggles
                         .isLocationOn(ShareActivity.this);
+                final boolean btWasOn = com.huchuan.core.SystemToggles
+                        .isBluetoothOn(ShareActivity.this);
                 if (hasRoot) {
                     bt = com.huchuan.core.SystemToggles
                             .tryEnableBluetoothByRoot(ShareActivity.this);
                     loc = com.huchuan.core.SystemToggles
                             .tryEnableLocationByRoot(ShareActivity.this);
                     Log.i(TAG, "root 自动开启: 蓝牙=" + bt + " 定位=" + loc);
-                    // 只有"原本没开、被我们打开"才提示，原本就开着不动
+                    // ★只有"原本没开、被我们打开"才标记★
+                    // 原本就开着的保持 false —— 收尾时不会去关它。
                     autoEnabledLocation = loc && !locWasOn;
+                    autoEnabledBluetooth = bt && !btWasOn;
                 } else {
                     bt = com.huchuan.core.SystemToggles.isBluetoothOn(ShareActivity.this);
                     loc = com.huchuan.core.SystemToggles.isLocationOn(ShareActivity.this);
@@ -939,6 +956,47 @@ private void searching() {
         ui.removeCallbacks(sweep);
         super.onDestroy();
         stopScan();
+        restoreRadio();
+    }
+
+    /**
+     * 分享结束后，把我们**自动打开**的开关关回去（P134）。
+     *
+     * <p>★只关我们打开的★ —— 调用前必须先看 {@link #autoEnabledBluetooth} /
+     * {@link #autoEnabledLocation}，这两个标志只在"原本关着 → 被我们打开"
+     * 时才是 true。用户本来就开着的开关，这里绝不碰。
+     *
+     * <p>为什么拖 800ms：{@code onDestroy} 紧跟在用户点完"发送"之后，
+     * 这时候传输可能还在收尾（WiFi Direct 建组、对端连进来）。
+     * 立刻关蓝牙会把正在进行的连接一起掐掉。等一小会儿再关，
+     * 既不影响收尾，也不会让开关一直开着。
+     *
+     * <p>放后台线程：su 命令是阻塞的，主线程调用会卡住退出动画。
+     */
+    private void restoreRadio() {
+        if (!autoEnabledBluetooth && !autoEnabledLocation) return;   // 没动过系统开关
+
+        final boolean needBt = autoEnabledBluetooth;
+        final boolean needLoc = autoEnabledLocation;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    Thread.sleep(800);       // 等传输收尾
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                if (needBt) {
+                    boolean ok = com.huchuan.core.SystemToggles
+                            .tryDisableBluetoothByRoot();
+                    Log.i(TAG, "恢复蓝牙为关闭: " + ok);
+                }
+                if (needLoc) {
+                    boolean ok = com.huchuan.core.SystemToggles
+                            .tryDisableLocationByRoot();
+                    Log.i(TAG, "恢复定位为关闭: " + ok);
+                }
+            }
+        }, "restore-radio").start();
     }
 
     private void toast(String s) {

@@ -142,6 +142,25 @@ public final class SystemToggles {
         return findSu() != null;
     }
 
+    /**
+     * 用 root 关掉蓝牙（恢复原状）。
+     *
+     * <p>只在"原本是关的、被我们打开"时调用 —— 用户自己开的不许动。
+     */
+    public static boolean tryDisableBluetoothByRoot() {
+        return runSu("svc bluetooth disable", 4000);
+    }
+
+    /**
+     * 用 root 关掉定位（恢复原状）。
+     *
+     * <p>★这里恢复成 OFF 而不是"还原成原来的模式"★：我们只会把定位从
+     * OFF 打开成高精度模式，所以原来的值必然是 OFF，直接写 0 就是准确还原。
+     */
+    public static boolean tryDisableLocationByRoot() {
+        return runSu("settings put secure location_mode 0", 4000);
+    }
+
     // ------------------------------------------------------------------
     // 兜底：跳系统界面（无 root 时唯一合规路径）
     // ------------------------------------------------------------------
