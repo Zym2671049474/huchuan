@@ -96,6 +96,27 @@ public final class SystemToggles {
         return isBluetoothOn(ctx) && isLocationOn(ctx);
     }
 
+    /**
+     * 生成"为什么扫不到设备"的说明；一切正常时返回 null。
+     *
+     * <p>调用方拿到就直接显示，不用自己拼 —— 分享卡片和设置页
+     * 要表达的是同一件事，文案必须一致，否则两处说法不同会很怪。
+     *
+     * <p>按"阻断程度"排序：蓝牙没开的优先级最高（连扫描器都用不了），
+     * 其次是定位（静默失败），最后才是无 root 的能力说明。
+     *
+     * @return 需要提示的文字，或 null（无需提示）
+     */
+    public static String scanBlockedReason(Context ctx) {
+        if (!isBluetoothOn(ctx)) {
+            return "蓝牙未开启，搜不到附近设备\n请从控制中心打开「蓝牙」";
+        }
+        if (!isLocationOn(ctx)) {
+            return "定位未开启，搜不到附近设备\n请从控制中心打开「定位」";
+        }
+        return null;
+    }
+
     // ------------------------------------------------------------------
     // 自动开启（root）
     // ------------------------------------------------------------------

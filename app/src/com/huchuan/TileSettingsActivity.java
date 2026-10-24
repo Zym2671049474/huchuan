@@ -86,8 +86,10 @@ public class TileSettingsActivity extends Activity {
      */
     private String nearbySig = null;
 
-    /** 定位未开启的警告横幅（定位正常时为 GONE）。 */
+    /** 扫描受阻的警告横幅（蓝牙/定位任一未开时显示）。 */
     private View locationWarn;
+    /** 横幅里的提示文字（按实际原因动态填）。 */
+    private TextView warnText;
     /**
      * 上次的定位状态：-1=未知，0=关闭，1=开启。
      *
@@ -364,15 +366,15 @@ public class TileSettingsActivity extends Activity {
         lp.bottomMargin = dp(12);
         box.setLayoutParams(lp);
 
-        TextView msg = new TextView(this);
-        msg.setText("定位服务未开启\n蓝牙搜索必须打开定位才能发现设备");
-        msg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        msg.setTextColor(0xFF8A4B00);     // 深橙字，浅底上对比够
-        msg.setLineSpacing(0, 1.25f);
+        // 文案由 refreshNearby() 按实际状态填（蓝牙未开 / 定位未开）
+        warnText = new TextView(this);
+        warnText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        warnText.setTextColor(0xFF8A4B00);     // 深橙字，浅底上对比够
+        warnText.setLineSpacing(0, 1.25f);
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        msg.setLayoutParams(mlp);
-        box.addView(msg);
+        warnText.setLayoutParams(mlp);
+        box.addView(warnText);
 
         TextView go = new TextView(this);
         go.setText("去开启");
@@ -504,18 +506,28 @@ public class TileSettingsActivity extends Activity {
     private void refreshNearby() {
         if (nearbyList == null) return;
 
-        // ★先处理定位开关（P133）★ —— 这是"能不能扫到设备"的前提，
-        // 关着时列表永远是空的，必须在列表上方明确告诉用户原因。
+        // ★先处理"为什么扫不到"（P133/P134）★
+        //
+        // 蓝牙和定位任一没开，扫描都会静默失败（权限都在、startScan 不报错、
+        // 但一个广播都收不到）。必须在列表上方说清楚是哪个没开。
+        //
+        // 无 root 的机型上这里就是**唯一**的告知途径 —— 普通 App 没有能力
+        // 自己开这两个开关（定位更是连公开 API 都没有），只能提示用户
+        // 从控制中心手动打开。
+        //
         // 用 View.VISIBLE/GONE 而不是增删 View：避免每次刷新都重新 measure。
         if (locationWarn != null) {
-            boolean locOn = com.huchuan.core.Perms.isLocationEnabled(this);
-            locationWarn.setVisibility(locOn ? View.GONE : View.VISIBLE);
-            int now = locOn ? 1 : 0;
+            String why = com.huchuan.core.SystemToggles.scanBlockedReason(this);
+            boolean blocked = why != null;
+            locationWarn.setVisibility(blocked ? View.VISIBLE : View.GONE);
+            if (blocked && warnText != null) warnText.setText(why);
+
+            int now = blocked ? 1 : 0;
             if (now != lastLocOn) {     // 仅状态变化时打日志，避免每秒刷屏
                 lastLocOn = now;
                 android.util.Log.i("HuChuan.TileSettings",
-                        "定位服务=" + (locOn ? "开启" : "关闭") + " → 警告横幅"
-                        + (locOn ? "隐藏" : "显示"));
+                        blocked ? ("扫描受阻: " + why.replace('\n', ' '))
+                                : "蓝牙/定位均正常 → 警告横幅隐藏");
             }
         }
 
