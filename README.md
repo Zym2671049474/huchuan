@@ -2,6 +2,8 @@
 
 轻量级跨设备文件互传应用 —— 在类原生 Android 上实现与**小米（HyperOS）「小米互传」**互通。
 
+> ⚠️ **发送方向需要 root**（读 p2p0 MAC）；**接收方向不需要**。
+
 > 协议参考 [CatShare](https://github.com/kmod-midori/CatShare)，**从零用纯 Java 重写**，追求小而精。
 > 当前版本 **v0.2.0**：与小米 15 端到端互传已打通并实测通过。
 
@@ -9,7 +11,7 @@
 
 - **极小**：约 100 KB（对比 CatShare 5.9 MB）
 - **纯 Java**：无 Kotlin、无 Compose、**零第三方依赖**
-- **不需要 root / Shizuku**：协议中 MAC 是死字段（P001）
+- **接收不需要 root**；**发送需要 root**（要读 p2p0 真实 MAC，见 P058 修正）
 - **可离线构建**：`./build.sh` 全自动，无需 Gradle / Android SDK
 - **可脱离设备测试**：`./tests/run.sh` 纯 JVM 跑协议断言
 
